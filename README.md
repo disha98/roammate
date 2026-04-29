@@ -25,7 +25,7 @@ The app already has the main product flow working in the UI:
 7. A month-based typical weather summary for destinations.
 8. A real visa lookup backed by a repo-local Passport Index dataset snapshot.
 9. A live destination search flow backed by Open-Meteo geocoding, plus snapshot storage for selected cities.
-10. A small curated fallback list for demo data.
+10. A small curated fallback destination seed for demo data only.
 11. Availability suggestions, final shortlist selection, and voting screens.
 
 ## Product progress
