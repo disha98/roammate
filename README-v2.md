@@ -124,9 +124,14 @@ Optional:
 1. Run `src/lib/supabase/schema.sql` in the Supabase SQL editor to create/update all tables, columns, and RLS policies.
 2. Create an `avatars` storage bucket (public) with policies allowing authenticated users to upload to their own folder path.
 
+## Already Integrated
+
+- Visa lookup per member passport and destination (server-side passport-index dataset).
+- Weather summary per destination and trip date window (Open-Meteo archive API).
+- AI-generated destination summaries (cached per destination).
+
 ## What's Next
 
-- Visa lookup integration per member passport and destination.
-- Weather summary per destination and trip date window.
-- AI-generated destination summaries.
 - Destination recommendations based on group preferences.
+- Notifications for trip state changes.
+- Rough cost estimates per destination.
