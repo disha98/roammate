@@ -174,8 +174,19 @@ create table if not exists votes (
   unique (trip_id, profile_id, type)
 );
 
+create table if not exists profile_availability_windows (
+  id uuid primary key default gen_random_uuid(),
+  profile_id uuid not null references profiles(id) on delete cascade,
+  label text not null,
+  start_month_day text not null,
+  end_month_day text not null,
+  created_at timestamptz not null default now()
+);
+
 alter table profiles add column if not exists photo_url text;
 alter table trips add column if not exists decided_at timestamptz;
+alter table trips add column if not exists final_date_option_ids text[] not null default '{}';
+alter table trips add column if not exists trip_duration integer not null default 7;
 alter table trip_invites add column if not exists expires_at timestamptz;
 alter table trip_invites add column if not exists revoked_at timestamptz;
 
@@ -208,6 +219,10 @@ drop policy if exists "trips_update_planner" on trips;
 create policy "trips_update_planner" on trips
 for update using (public.is_trip_planner(id));
 
+drop policy if exists "trips_delete_creator" on trips;
+create policy "trips_delete_creator" on trips
+for delete using (creator_profile_id = auth.uid());
+
 drop policy if exists "trip_members_select_visible" on trip_members;
 create policy "trip_members_select_visible" on trip_members
 for select using (profile_id = auth.uid() or public.is_trip_member(trip_id));
@@ -215,6 +230,14 @@ for select using (profile_id = auth.uid() or public.is_trip_member(trip_id));
 drop policy if exists "trip_members_insert_self_or_planner" on trip_members;
 create policy "trip_members_insert_self_or_planner" on trip_members
 for insert with check (profile_id = auth.uid() or public.is_trip_creator(trip_id));
+
+drop policy if exists "trip_members_delete_planner" on trip_members;
+create policy "trip_members_delete_planner" on trip_members
+for delete using (public.is_trip_planner(trip_id) and profile_id != auth.uid());
+
+drop policy if exists "trip_members_delete_self" on trip_members;
+create policy "trip_members_delete_self" on trip_members
+for delete using (auth.uid() = profile_id);
 
 drop policy if exists "trip_invites_select_visible" on trip_invites;
 create policy "trip_invites_select_visible" on trip_invites
@@ -230,3 +253,85 @@ for insert with check (public.is_trip_planner(trip_id));
 drop policy if exists "trip_invites_update_planner_or_recipient" on trip_invites;
 create policy "trip_invites_update_planner_or_recipient" on trip_invites
 for update using (public.is_trip_planner(trip_id) or auth.uid() is not null);
+
+-- Planning tables RLS
+
+alter table availability_ranges enable row level security;
+alter table destinations enable row level security;
+alter table trip_destinations enable row level security;
+alter table votes enable row level security;
+alter table profile_availability_windows enable row level security;
+
+-- profile_availability_windows: users manage their own rows
+
+drop policy if exists "paw_select_own" on profile_availability_windows;
+create policy "paw_select_own" on profile_availability_windows
+for select using (auth.uid() = profile_id);
+
+drop policy if exists "paw_insert_own" on profile_availability_windows;
+create policy "paw_insert_own" on profile_availability_windows
+for insert with check (auth.uid() = profile_id);
+
+drop policy if exists "paw_delete_own" on profile_availability_windows;
+create policy "paw_delete_own" on profile_availability_windows
+for delete using (auth.uid() = profile_id);
+
+-- availability_ranges: trip members see all; insert/delete own
+
+drop policy if exists "ar_select_trip_member" on availability_ranges;
+create policy "ar_select_trip_member" on availability_ranges
+for select using (public.is_trip_member(trip_id));
+
+drop policy if exists "ar_insert_own" on availability_ranges;
+create policy "ar_insert_own" on availability_ranges
+for insert with check (auth.uid() = profile_id and public.is_trip_member(trip_id));
+
+drop policy if exists "ar_delete_own" on availability_ranges;
+create policy "ar_delete_own" on availability_ranges
+for delete using (auth.uid() = profile_id);
+
+-- destinations: any authenticated user can read/insert
+
+drop policy if exists "dest_select_authenticated" on destinations;
+create policy "dest_select_authenticated" on destinations
+for select using (auth.uid() is not null);
+
+drop policy if exists "dest_insert_authenticated" on destinations;
+create policy "dest_insert_authenticated" on destinations
+for insert with check (auth.uid() is not null);
+
+drop policy if exists "dest_update_authenticated" on destinations;
+create policy "dest_update_authenticated" on destinations
+for update using (auth.uid() is not null);
+
+-- trip_destinations: trip members can read/insert; planner can update shortlist
+
+drop policy if exists "td_select_trip_member" on trip_destinations;
+create policy "td_select_trip_member" on trip_destinations
+for select using (public.is_trip_member(trip_id));
+
+drop policy if exists "td_insert_trip_member" on trip_destinations;
+create policy "td_insert_trip_member" on trip_destinations
+for insert with check (public.is_trip_member(trip_id));
+
+drop policy if exists "td_update_planner" on trip_destinations;
+create policy "td_update_planner" on trip_destinations
+for update using (public.is_trip_planner(trip_id));
+
+-- votes: trip members can read; members insert/update their own
+
+drop policy if exists "votes_select_trip_member" on votes;
+create policy "votes_select_trip_member" on votes
+for select using (public.is_trip_member(trip_id));
+
+drop policy if exists "votes_insert_own" on votes;
+create policy "votes_insert_own" on votes
+for insert with check (auth.uid() = profile_id and public.is_trip_member(trip_id));
+
+drop policy if exists "votes_update_own" on votes;
+create policy "votes_update_own" on votes
+for update using (auth.uid() = profile_id and public.is_trip_member(trip_id));
+
+drop policy if exists "votes_delete_own" on votes;
+create policy "votes_delete_own" on votes
+for delete using (auth.uid() = profile_id);

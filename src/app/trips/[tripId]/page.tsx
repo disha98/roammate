@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { RequireAuth } from "@/components/require-auth";
 import { Button, Input, Panel, StatusBadge, Textarea } from "@/components/ui";
@@ -17,6 +17,7 @@ const statusFlow: TripStatus[] = ["collecting_members", "planning", "voting", "d
 
 export default function TripWorkspacePage() {
   const params = useParams<{ tripId: string }>();
+  const router = useRouter();
   const {
     currentProfile,
     isPending,
@@ -33,8 +34,11 @@ export default function TripWorkspacePage() {
     getVotesForTrip,
     setFinalDateOptions,
     createInviteLink,
-    inviteByEmail,
     revokeInvite,
+    removeTripMember,
+    leaveTrip,
+    deleteTrip,
+    updateTrip,
     addAvailability,
     removeAvailability,
     addDestinationToTrip,
@@ -60,8 +64,8 @@ export default function TripWorkspacePage() {
   const shortlist = tripDestinations.filter((entry) => entry.shortlist);
   const canOpenVoting = shortlist.length > 0 && finalDateOptions.length > 0;
 
-  const [inviteEmail, setInviteEmail] = useState("");
   const [generatedLink, setGeneratedLink] = useState("");
+  const [copied, setCopied] = useState(false);
   const [rangeStart, setRangeStart] = useState(trip?.tentativeStart ?? "");
   const [rangeEnd, setRangeEnd] = useState(trip?.tentativeEnd ?? "");
   const [destinationQuery, setDestinationQuery] = useState("");
@@ -70,9 +74,14 @@ export default function TripWorkspacePage() {
   const [destinationSearchMessage, setDestinationSearchMessage] = useState("");
   const [selectedDestination, setSelectedDestination] = useState<DestinationCatalogItem | null>(null);
   const [destinationNote, setDestinationNote] = useState("");
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showEditWindow, setShowEditWindow] = useState(false);
+  const [editStart, setEditStart] = useState(trip?.tentativeStart ?? "");
+  const [editEnd, setEditEnd] = useState(trip?.tentativeEnd ?? "");
+  const [editDuration, setEditDuration] = useState(String(trip?.tripDuration ?? 7));
 
   useEffect(() => {
-    if (!isPlanner) {
+    if (!currentProfile) {
       return;
     }
 
@@ -126,7 +135,7 @@ export default function TripWorkspacePage() {
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [destinationQuery, isPlanner]);
+  }, [currentProfile, destinationQuery]);
 
   const availabilityByMember = useMemo(() => {
     return members.map((member) => ({
@@ -166,13 +175,14 @@ export default function TripWorkspacePage() {
 
   const activeTrip = trip;
 
-  async function handleEmailInvite(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!isPlanner) {
-      return;
-    }
-    await inviteByEmail(activeTrip.id, inviteEmail);
-    setInviteEmail("");
+  async function handleDeleteTrip(tripId: string) {
+    await deleteTrip(tripId);
+    router.push("/dashboard");
+  }
+
+  async function handleLeaveTrip(tripId: string) {
+    await leaveTrip(tripId);
+    router.push("/dashboard");
   }
 
   async function handleGenerateLink() {
@@ -184,21 +194,21 @@ export default function TripWorkspacePage() {
     setGeneratedLink(`${window.location.origin}/invite/${invite.token}`);
   }
 
-  function handleAvailabilitySubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleAvailabilitySubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    addAvailability(activeTrip.id, rangeStart, rangeEnd);
+    await addAvailability(activeTrip.id, rangeStart, rangeEnd);
   }
 
   function handleUseSuggestedAvailability(startDate: string, endDate: string) {
-    addAvailability(activeTrip.id, startDate, endDate);
+    void addAvailability(activeTrip.id, startDate, endDate);
   }
 
-  function handleDestinationSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleDestinationSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!isPlanner || !selectedDestination) {
+    if (!currentProfile || !selectedDestination) {
       return;
     }
-    addDestinationToTrip(activeTrip.id, selectedDestination, destinationNote);
+    await addDestinationToTrip(activeTrip.id, selectedDestination, destinationNote);
     setDestinationNote("");
     setDestinationQuery("");
     setDestinationResults([]);
@@ -209,7 +219,7 @@ export default function TripWorkspacePage() {
     const next = finalDateOptions.some((option) => option.id === optionId)
       ? finalDateOptions.filter((option) => option.id !== optionId).map((option) => option.id)
       : [...finalDateOptions.map((option) => option.id), optionId];
-    setFinalDateOptions(activeTrip.id, next);
+    void setFinalDateOptions(activeTrip.id, next);
   }
 
   return (
@@ -220,7 +230,20 @@ export default function TripWorkspacePage() {
             trip={activeTrip}
             isPlanner={isPlanner}
             onStatusChange={updateTripStatus}
+            onLeaveTrip={handleLeaveTrip}
+            onDeleteTrip={handleDeleteTrip}
+            onUpdateTrip={updateTrip}
             canOpenVoting={canOpenVoting}
+            showDeleteConfirm={showDeleteConfirm}
+            setShowDeleteConfirm={setShowDeleteConfirm}
+            showEditWindow={showEditWindow}
+            setShowEditWindow={setShowEditWindow}
+            editStart={editStart}
+            setEditStart={setEditStart}
+            editEnd={editEnd}
+            setEditEnd={setEditEnd}
+            editDuration={editDuration}
+            setEditDuration={setEditDuration}
           />
 
           {activeTrip.status === "collecting_members" ? (
@@ -229,12 +252,12 @@ export default function TripWorkspacePage() {
               members={members}
               invites={invites}
               getInviteStatus={getInviteStatus}
-              inviteEmail={inviteEmail}
-              setInviteEmail={setInviteEmail}
               generatedLink={generatedLink}
-              onEmailInvite={handleEmailInvite}
+              copied={copied}
+              setCopied={setCopied}
               onGenerateLink={handleGenerateLink}
               onRevokeInvite={revokeInvite}
+              onRemoveMember={removeTripMember}
               onAdvanceToPlanning={updateTripStatus}
               isPlanner={isPlanner}
             />
@@ -270,6 +293,8 @@ export default function TripWorkspacePage() {
               onSubmitDestination={handleDestinationSubmit}
               onToggleShortlist={toggleDestinationShortlist}
               isPlanner={isPlanner}
+              canOpenVoting={canOpenVoting}
+              onOpenVoting={() => void updateTripStatus(activeTrip.id, "voting")}
             />
           ) : null}
 
@@ -307,12 +332,38 @@ function TripHero({
   trip,
   isPlanner,
   onStatusChange,
-  canOpenVoting
+  onLeaveTrip,
+  onDeleteTrip,
+  onUpdateTrip,
+  canOpenVoting,
+  showDeleteConfirm,
+  setShowDeleteConfirm,
+  showEditWindow,
+  setShowEditWindow,
+  editStart,
+  setEditStart,
+  editEnd,
+  setEditEnd,
+  editDuration,
+  setEditDuration
 }: {
   trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
   isPlanner: boolean;
   onStatusChange: (tripId: string, status: TripStatus) => Promise<void>;
+  onLeaveTrip: (tripId: string) => Promise<void>;
+  onDeleteTrip: (tripId: string) => Promise<void>;
+  onUpdateTrip: (tripId: string, input: { tentativeStart: string; tentativeEnd: string; tripDuration: number }) => Promise<void>;
   canOpenVoting: boolean;
+  showDeleteConfirm: boolean;
+  setShowDeleteConfirm: (value: boolean) => void;
+  showEditWindow: boolean;
+  setShowEditWindow: (value: boolean) => void;
+  editStart: string;
+  setEditStart: (value: string) => void;
+  editEnd: string;
+  setEditEnd: (value: string) => void;
+  editDuration: string;
+  setEditDuration: (value: string) => void;
 }) {
   return (
     <Panel className="overflow-hidden">
@@ -329,9 +380,62 @@ function TripHero({
           </div>
           <h1 className="section-title mt-4 text-5xl text-ink">{trip.title}</h1>
           <p className="mt-4 max-w-4xl text-sm text-stone-600">{trip.summary}</p>
-          <p className="mt-5 text-xs uppercase tracking-[0.25em] text-stone-500">
-            Target dates: {formatDate(trip.tentativeStart)} to {formatDate(trip.tentativeEnd)}
-          </p>
+          <div className="mt-5">
+            <p className="text-xs uppercase tracking-[0.25em] text-stone-500">
+              Target window: {formatDate(trip.tentativeStart)} to {formatDate(trip.tentativeEnd)} · {trip.tripDuration} day trip
+            </p>
+            {isPlanner ? (
+              showEditWindow ? (
+                <div className="mt-3 rounded-[1.5rem] border border-ink/8 bg-white/80 p-4">
+                  <p className="text-sm font-semibold text-ink">Edit trip window</p>
+                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                    <div className="space-y-1">
+                      <label className="text-xs text-stone-500" htmlFor="edit-start">Window opens</label>
+                      <Input id="edit-start" type="date" value={editStart} onChange={(e) => setEditStart(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-stone-500" htmlFor="edit-end">Window closes</label>
+                      <Input id="edit-end" type="date" value={editEnd} onChange={(e) => setEditEnd(e.target.value)} />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-xs text-stone-500" htmlFor="edit-duration">Trip length (days)</label>
+                      <Input id="edit-duration" type="number" min={1} value={editDuration} onChange={(e) => setEditDuration(e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      onClick={() => {
+                        void onUpdateTrip(trip.id, {
+                          tentativeStart: editStart,
+                          tentativeEnd: editEnd,
+                          tripDuration: Number(editDuration) || 7
+                        });
+                        setShowEditWindow(false);
+                      }}
+                    >
+                      Save
+                    </Button>
+                    <Button variant="secondary" onClick={() => setShowEditWindow(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="mt-2 text-xs font-medium text-lagoon underline underline-offset-2"
+                  onClick={() => {
+                    setEditStart(trip.tentativeStart);
+                    setEditEnd(trip.tentativeEnd);
+                    setEditDuration(String(trip.tripDuration));
+                    setShowEditWindow(true);
+                  }}
+                >
+                  Edit window
+                </button>
+              )
+            ) : null}
+          </div>
         </div>
         <div className="rounded-[2rem] bg-ink p-5 text-white">
           <p className="text-sm uppercase tracking-[0.35em] text-sun">Trip stage</p>
@@ -359,14 +463,56 @@ function TripHero({
             
             
           ) : (
-            <p className="mt-4 text-sm text-stone-300">
-              The planner controls when this trip moves into the next stage.
-            </p>
+            <div className="mt-4">
+              <p className="text-sm text-stone-300">
+                The planner controls when this trip moves into the next stage.
+              </p>
+              <Button
+                variant="secondary"
+                className="mt-3 border-coral/30 bg-coral/10 text-coral hover:border-coral/50 hover:text-coral"
+                onClick={() => void onLeaveTrip(trip.id)}
+              >
+                Leave trip
+              </Button>
+            </div>
           )}
           {isPlanner && !canOpenVoting && trip.status === "planning" ? (
             <p className="mt-4 text-sm text-stone-300">
               Choose at least one shortlisted destination and one final date window before voting opens.
             </p>
+          ) : null}
+          {isPlanner ? (
+            <div className="mt-4">
+              {showDeleteConfirm ? (
+                <div className="rounded-2xl bg-coral/10 p-3">
+                  <p className="text-sm text-coral">Delete this trip permanently? This cannot be undone.</p>
+                  <div className="mt-2 flex gap-2">
+                    <button
+                      type="button"
+                      className="rounded-full bg-coral px-3 py-1 text-xs font-semibold text-white"
+                      onClick={() => void onDeleteTrip(trip.id)}
+                    >
+                      Yes, delete
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-stone-300"
+                      onClick={() => setShowDeleteConfirm(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="text-xs font-medium text-stone-400 underline underline-offset-2 hover:text-coral"
+                  onClick={() => setShowDeleteConfirm(true)}
+                >
+                  Delete trip
+                </button>
+              )}
+            </div>
           ) : null}
         </div>
       </div>
@@ -379,12 +525,12 @@ function CollectingMembersStage({
   members,
   invites,
   getInviteStatus,
-  inviteEmail,
-  setInviteEmail,
   generatedLink,
-  onEmailInvite,
+  copied,
+  setCopied,
   onGenerateLink,
   onRevokeInvite,
+  onRemoveMember,
   onAdvanceToPlanning,
   isPlanner
 }: {
@@ -392,12 +538,12 @@ function CollectingMembersStage({
   members: ReturnType<ReturnType<typeof useAppState>["getTripMembers"]>;
   invites: ReturnType<ReturnType<typeof useAppState>["getTripInvites"]>;
   getInviteStatus: ReturnType<typeof useAppState>["getInviteStatus"];
-  inviteEmail: string;
-  setInviteEmail: (value: string) => void;
   generatedLink: string;
-  onEmailInvite: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  copied: boolean;
+  setCopied: (value: boolean) => void;
   onGenerateLink: () => Promise<void>;
   onRevokeInvite: (inviteId: string) => Promise<void>;
+  onRemoveMember: (tripId: string, profileId: string) => Promise<void>;
   onAdvanceToPlanning: (tripId: string, status: TripStatus) => Promise<void>;
   isPlanner: boolean;
 }) {
@@ -410,7 +556,7 @@ function CollectingMembersStage({
           Once everyone has joined, this trip can move into dates and destination planning.
         </p>
         <div className="mt-6 grid gap-3 md:grid-cols-2">
-          {members.map(({ id, profile, role }) => (
+          {members.map(({ id, profile, role, profileId }) => (
             <div key={id} className="rounded-[1.6rem] border border-ink/8 bg-white/75 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div>
@@ -424,6 +570,15 @@ function CollectingMembersStage({
               <p className="mt-3 text-sm text-stone-600">
                 {profile?.homeCity || "City not added yet"} · Passport {profile?.passport || "not added yet"}
               </p>
+              {isPlanner && role !== "planner" ? (
+                <button
+                  type="button"
+                  className="mt-3 text-sm font-semibold text-coral"
+                  onClick={() => void onRemoveMember(trip.id, profileId)}
+                >
+                  Remove from trip
+                </button>
+              ) : null}
             </div>
           ))}
         </div>
@@ -434,32 +589,38 @@ function CollectingMembersStage({
         <h2 className="section-title mt-2 text-3xl">Bring everyone into the trip.</h2>
         {isPlanner ? (
           <>
-            <form className="mt-5 flex gap-3" onSubmit={(event) => void onEmailInvite(event)}>
-              <Input
-                type="email"
-                value={inviteEmail}
-                onChange={(event) => setInviteEmail(event.target.value)}
-                placeholder="Friend's email address"
-              />
-              <Button type="submit">Send invite</Button>
-            </form>
-            <div className="mt-4 rounded-[1.75rem] bg-mist p-4">
+            <div className="mt-5 rounded-[1.75rem] bg-mist p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-sm font-semibold text-ink">Shareable trip link</p>
+                  <p className="text-sm font-semibold text-ink">Invite link</p>
                   <p className="text-xs text-stone-500">
-                    Friends can preview the trip before they sign in and join.
+                    Share this link with friends — they can preview the trip and join after signing in.
                   </p>
                 </div>
-                <Button variant="secondary" onClick={() => void onGenerateLink()}>
-                  Create link
-                </Button>
+                {!generatedLink && (
+                  <Button variant="secondary" onClick={() => void onGenerateLink()}>
+                    Generate link
+                  </Button>
+                )}
               </div>
-              {generatedLink ? (
-                <p className="mt-3 break-all rounded-2xl bg-white px-3 py-2 text-sm text-stone-700">
-                  {generatedLink}
-                </p>
-              ) : null}
+              {generatedLink && (
+                <div className="mt-3 flex items-center gap-2">
+                  <p className="flex-1 break-all rounded-2xl bg-white px-3 py-2 text-sm text-stone-700">
+                    {generatedLink}
+                  </p>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-full bg-lagoon px-4 py-2 text-sm font-semibold text-white transition hover:bg-lagoon/85"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(generatedLink);
+                      setCopied(true);
+                      window.setTimeout(() => setCopied(false), 2000);
+                    }}
+                  >
+                    {copied ? "Copied!" : "Copy"}
+                  </button>
+                </div>
+              )}
             </div>
           </>
         ) : (
@@ -468,33 +629,27 @@ function CollectingMembersStage({
             into planning.
           </div>
         )}
-        {isPlanner ? (
+        {isPlanner && invites.length > 0 ? (
           <div className="mt-5">
             <p className="text-sm font-semibold text-ink">Invite activity</p>
             <div className="mt-3 space-y-2">
-              {invites.length === 0 ? (
-                <div className="rounded-2xl bg-white/70 px-3 py-2 text-sm text-stone-500">
-                  No invites sent yet.
+              {invites.map((invite) => (
+                <div key={invite.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white/70 px-3 py-2 text-sm text-stone-600">
+                  <span>
+                    {invite.type === "email" ? `Invited ${invite.email}` : "Share link"} ·{" "}
+                    {inviteStatusLabel(getInviteStatus(invite))}
+                  </span>
+                  {getInviteStatus(invite) === "pending" ? (
+                    <button
+                      type="button"
+                      className="font-semibold text-coral"
+                      onClick={() => void onRevokeInvite(invite.id)}
+                    >
+                      Revoke
+                    </button>
+                  ) : null}
                 </div>
-              ) : (
-                invites.map((invite) => (
-                  <div key={invite.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white/70 px-3 py-2 text-sm text-stone-600">
-                    <span>
-                      {invite.type === "email" ? `Invite sent to ${invite.email}` : "Share link ready"} ·{" "}
-                      {inviteStatusLabel(getInviteStatus(invite))}
-                    </span>
-                    {getInviteStatus(invite) === "pending" ? (
-                      <button
-                        type="button"
-                        className="font-semibold text-coral"
-                        onClick={() => void onRevokeInvite(invite.id)}
-                      >
-                        Revoke
-                      </button>
-                    ) : null}
-                  </div>
-                ))
-              )}
+              ))}
             </div>
           </div>
         ) : null}
@@ -543,7 +698,9 @@ function PlanningStage({
   setDestinationNote,
   onSubmitDestination,
   onToggleShortlist,
-  isPlanner
+  isPlanner,
+  canOpenVoting,
+  onOpenVoting
 }: {
   trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
   currentProfileId: string | undefined;
@@ -576,6 +733,8 @@ function PlanningStage({
   onSubmitDestination: (event: FormEvent<HTMLFormElement>) => void;
   onToggleShortlist: (tripDestinationId: string) => void;
   isPlanner: boolean;
+  canOpenVoting: boolean;
+  onOpenVoting: () => void;
 }) {
   return (
     <div className="space-y-6">
@@ -615,6 +774,23 @@ function PlanningStage({
           isPlanner={isPlanner}
         />
       </div>
+      {isPlanner ? (
+        <Panel className="p-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <p className="text-sm uppercase tracking-[0.3em] text-lagoon">Ready for the final call?</p>
+              <p className="mt-2 text-sm text-stone-600">
+                {canOpenVoting
+                  ? "The shortlist and date windows are set. Open voting so the group can decide."
+                  : "Choose at least one shortlisted destination and one final date window before voting opens."}
+              </p>
+            </div>
+            <Button disabled={!canOpenVoting} onClick={onOpenVoting}>
+              Open voting
+            </Button>
+          </div>
+        </Panel>
+      ) : null}
     </div>
   );
 }
@@ -750,7 +926,7 @@ function PlanningSidebar({
                       {member.profileId === currentProfileId ? (
                         <button
                           className="font-semibold text-coral"
-                          onClick={() => onRemoveAvailability(range.id)}
+                          onClick={() => void onRemoveAvailability(range.id)}
                           type="button"
                         >
                           Remove
@@ -814,67 +990,66 @@ function DestinationBoard({
         </div>
       </div>
 
-      {isPlanner ? (
-        <form className="mt-5 grid gap-3 rounded-[1.8rem] bg-mist p-4 lg:grid-cols-[1fr_1.2fr_auto]" onSubmit={onSubmitDestination}>
-          <div className="space-y-2">
-            <Input
-              value={destinationQuery}
-              onChange={(event) => setDestinationQuery(event.target.value)}
-              placeholder="Search a city worldwide"
-            />
-            <div className="min-h-5 text-xs text-stone-500">
-              {isSearchingDestinations
-                ? "Searching major cities..."
-                : destinationSearchMessage}
-            </div>
-            {destinationResults.length > 0 ? (
-              <div className="max-h-72 space-y-2 overflow-auto rounded-[1.5rem] border border-ink/8 bg-white/90 p-2">
-                {destinationResults.map((destination) => {
-                  const isSelected = selectedDestination?.id === destination.id;
-
-                  return (
-                    <button
-                      key={destination.id}
-                      className={`flex w-full items-start justify-between gap-3 rounded-[1.2rem] px-3 py-3 text-left transition ${
-                        isSelected ? "bg-lagoon/10 ring-1 ring-lagoon" : "hover:bg-mist"
-                      }`}
-                      onClick={() => onSelectDestination(destination)}
-                      type="button"
-                    >
-                      <div>
-                        <p className="font-semibold text-ink">
-                          {destination.city}
-                          {destination.region ? `, ${destination.region}` : ""}, {destination.country}
-                        </p>
-                        <p className="text-sm text-stone-600">
-                          {destination.population ? `Population ${destination.population.toLocaleString()}` : "Major city"}
-                        </p>
-                      </div>
-                      <span className="rounded-full bg-mist px-3 py-1 text-xs font-semibold text-stone-700">
-                        {destination.countryCode}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-          </div>
-          <Textarea
-            rows={1}
-            value={destinationNote}
-            onChange={(event) => setDestinationNote(event.target.value)}
-            placeholder="Why does this place fit the trip?"
-          />
-          <Button type="submit" disabled={!selectedDestination}>
-            Add option
-          </Button>
-        </form>
-      ) : (
-        <div className="mt-5 rounded-[1.8rem] bg-mist p-4 text-sm text-stone-700">
-          The planner is building the destination shortlist. You can review each option and vote
-          once the trip moves to the next stage.
+      <form className="mt-5 grid gap-3 rounded-[1.8rem] bg-mist p-4 lg:grid-cols-[1fr_1.2fr_auto]" onSubmit={onSubmitDestination}>
+        <div className="lg:col-span-3">
+          <p className="text-sm text-stone-700">
+            Everyone in the trip can suggest destination options during planning. The planner still
+            decides which ones move onto the final shortlist.
+          </p>
         </div>
-      )}
+        <div className="space-y-2">
+          <Input
+            value={destinationQuery}
+            onChange={(event) => setDestinationQuery(event.target.value)}
+            placeholder="Search a city worldwide"
+          />
+          <div className="min-h-5 text-xs text-stone-500">
+            {isSearchingDestinations
+              ? "Searching major cities..."
+              : destinationSearchMessage}
+          </div>
+          {destinationResults.length > 0 ? (
+            <div className="max-h-72 space-y-2 overflow-auto rounded-[1.5rem] border border-ink/8 bg-white/90 p-2">
+              {destinationResults.map((destination) => {
+                const isSelected = selectedDestination?.id === destination.id;
+
+                return (
+                  <button
+                    key={destination.id}
+                    className={`flex w-full items-start justify-between gap-3 rounded-[1.2rem] px-3 py-3 text-left transition ${
+                      isSelected ? "bg-lagoon/10 ring-1 ring-lagoon" : "hover:bg-mist"
+                    }`}
+                    onClick={() => onSelectDestination(destination)}
+                    type="button"
+                  >
+                    <div>
+                      <p className="font-semibold text-ink">
+                        {destination.city}
+                        {destination.region ? `, ${destination.region}` : ""}, {destination.country}
+                      </p>
+                      <p className="text-sm text-stone-600">
+                        {destination.population ? `Population ${destination.population.toLocaleString()}` : "Major city"}
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-mist px-3 py-1 text-xs font-semibold text-stone-700">
+                      {destination.countryCode}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
+        <Textarea
+          rows={1}
+          value={destinationNote}
+          onChange={(event) => setDestinationNote(event.target.value)}
+          placeholder="Why does this place fit the trip?"
+        />
+        <Button type="submit" disabled={!selectedDestination}>
+          Add option
+        </Button>
+      </form>
 
       <div className="mt-6 grid gap-5 xl:grid-cols-2">
         {tripDestinations.map((entry) => {
@@ -905,12 +1080,20 @@ function DestinationBoard({
                   {isPlanner ? (
                     <button
                       className={`rounded-full px-3 py-2 text-xs font-semibold ${entry.shortlist ? "bg-lagoon text-white" : "bg-mist text-stone-700"}`}
-                      onClick={() => onToggleShortlist(entry.id)}
+                      onClick={() => void onToggleShortlist(entry.id)}
                       type="button"
                     >
                       {entry.shortlist ? "On final shortlist" : "Move to shortlist"}
                     </button>
-                  ) : null}
+                  ) : (
+                    <span
+                      className={`rounded-full px-3 py-2 text-xs font-semibold ${
+                        entry.shortlist ? "bg-lagoon text-white" : "bg-mist text-stone-700"
+                      }`}
+                    >
+                      {entry.shortlist ? "On final shortlist" : "Destination option"}
+                    </span>
+                  )}
                 </div>
                 <div className="mt-4 flex flex-wrap gap-2">
                   {destination.tags.map((tag) => (
@@ -928,7 +1111,7 @@ function DestinationBoard({
                     endDate={trip.tentativeEnd}
                   />
                 </div>
-                <p className="mt-3 text-sm text-stone-600">{entry.note || "No note from the planner yet."}</p>
+                <p className="mt-3 text-sm text-stone-600">{entry.note || "No note added yet."}</p>
                 <div className="mt-4 grid gap-2 md:grid-cols-2">
                   {members.map((member) => (
                     <div key={member.id} className="rounded-2xl border border-ink/8 bg-white px-3 py-2 text-sm text-stone-700">
@@ -968,7 +1151,7 @@ function VotingStage({
   dateVote: string | undefined;
   destinationVotes: ReturnType<ReturnType<typeof useAppState>["getVotesForTrip"]>;
   dateVotes: ReturnType<ReturnType<typeof useAppState>["getVotesForTrip"]>;
-  onVote: (tripId: string, type: "destination" | "date_window", optionId: string) => void;
+  onVote: (tripId: string, type: "destination" | "date_window", optionId: string) => Promise<void>;
 }) {
   return (
     <div className="grid gap-6 xl:grid-cols-[0.72fr_1.28fr]">
@@ -1000,7 +1183,7 @@ function VotingStage({
                 votes: destinationVotes.filter((vote) => vote.optionId === entry.destinationId).length
               }))}
             selectedId={destinationVote}
-            onSelect={(optionId) => onVote(trip.id, "destination", optionId)}
+            onSelect={(optionId) => void onVote(trip.id, "destination", optionId)}
           />
           <VoteCard
             title="Date vote"
@@ -1011,7 +1194,7 @@ function VotingStage({
               votes: dateVotes.filter((vote) => vote.optionId === option.id).length
             }))}
             selectedId={dateVote}
-            onSelect={(optionId) => onVote(trip.id, "date_window", optionId)}
+            onSelect={(optionId) => void onVote(trip.id, "date_window", optionId)}
           />
         </div>
       </Panel>

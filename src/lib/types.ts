@@ -35,6 +35,7 @@ export interface Trip {
   summary: string;
   tentativeStart: string;
   tentativeEnd: string;
+  tripDuration: number;
   creatorProfileId: string;
   finalDateOptionIds: string[];
   status: TripStatus;

@@ -15,6 +15,7 @@ export default function NewTripPage() {
   const [summary, setSummary] = useState("");
   const [tentativeStart, setTentativeStart] = useState("");
   const [tentativeEnd, setTentativeEnd] = useState("");
+  const [tripDuration, setTripDuration] = useState("7");
   const [errorMessage, setErrorMessage] = useState("");
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -22,7 +23,7 @@ export default function NewTripPage() {
     setErrorMessage("");
 
     try {
-      const tripId = await createTrip({ title, groupName, summary, tentativeStart, tentativeEnd });
+      const tripId = await createTrip({ title, groupName, summary, tentativeStart, tentativeEnd, tripDuration: Number(tripDuration) || 7 });
       router.push(`/trips/${tripId}`);
     } catch (error) {
       setErrorMessage((error as Error).message || "We couldn’t create the trip right now.");
@@ -77,10 +78,10 @@ export default function NewTripPage() {
                 placeholder="What kind of trip is this and what should the group optimize for?"
               />
             </div>
-            <div className="grid gap-4 md:grid-cols-2">
+            <div className="grid gap-4 md:grid-cols-3">
               <div className="space-y-2">
                 <label className="text-sm font-semibold text-ink" htmlFor="tentative-start">
-                  Tentative start date
+                  Window opens
                 </label>
                 <Input
                   id="tentative-start"
@@ -92,7 +93,7 @@ export default function NewTripPage() {
               </div>
               <div className="space-y-2">
                 <label className="text-sm font-semibold text-ink" htmlFor="tentative-end">
-                  Tentative end date
+                  Window closes
                 </label>
                 <Input
                   id="tentative-end"
@@ -100,6 +101,19 @@ export default function NewTripPage() {
                   type="date"
                   value={tentativeEnd}
                   onChange={(event) => setTentativeEnd(event.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-ink" htmlFor="trip-duration">
+                  Trip length (days)
+                </label>
+                <Input
+                  id="trip-duration"
+                  required
+                  type="number"
+                  min={1}
+                  value={tripDuration}
+                  onChange={(event) => setTripDuration(event.target.value)}
                 />
               </div>
             </div>

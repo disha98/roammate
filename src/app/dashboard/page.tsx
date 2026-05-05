@@ -5,17 +5,34 @@ import { AppShell } from "@/components/app-shell";
 import { RequireAuth } from "@/components/require-auth";
 import { Button, Panel, StatusBadge } from "@/components/ui";
 import { useAppState } from "@/context/app-state";
+import { Trip } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
 
-function groupTrips(trips: ReturnType<ReturnType<typeof useAppState>["getVisibleTrips"]>["created"]) {
-  return trips.reduce<Record<string, typeof trips>>((acc, trip) => {
+function groupTrips(trips: Trip[]) {
+  return trips.reduce<Record<string, Trip[]>>((acc, trip) => {
     acc[trip.groupName] = [...(acc[trip.groupName] ?? []), trip];
     return acc;
   }, {});
 }
 
+function getTripAttention(
+  trip: Trip,
+  currentProfileId: string | undefined,
+  getTripAvailability: (tripId: string) => { profileId: string }[]
+): string | null {
+  if (!currentProfileId) return null;
+  if (trip.status === "voting") return "Vote now";
+  if (trip.status === "planning") {
+    const ranges = getTripAvailability(trip.id);
+    const hasSubmitted = ranges.some((r) => r.profileId === currentProfileId);
+    if (!hasSubmitted) return "Add your dates";
+  }
+  if (trip.status === "collecting_members") return "Waiting for members";
+  return null;
+}
+
 export default function DashboardPage() {
-  const { currentProfile, getVisibleTrips } = useAppState();
+  const { currentProfile, getVisibleTrips, getTripMembers, getTripAvailability } = useAppState();
   const { created, joined } = getVisibleTrips();
   const createdByGroup = groupTrips(created);
   const joinedByGroup = groupTrips(joined);
@@ -45,11 +62,15 @@ export default function DashboardPage() {
                 eyebrow="You’re planning"
                 empty="No active planner trips yet."
                 groupedTrips={createdByGroup}
+                getMemberCount={(tripId) => getTripMembers(tripId).length}
+                getAttention={(trip) => getTripAttention(trip, currentProfile?.id, getTripAvailability)}
               />
               <TripColumn
                 eyebrow="You joined"
                 empty="Nothing shared with you yet."
                 groupedTrips={joinedByGroup}
+                getMemberCount={(tripId) => getTripMembers(tripId).length}
+                getAttention={(trip) => getTripAttention(trip, currentProfile?.id, getTripAvailability)}
               />
             </div>
           </Panel>
@@ -80,11 +101,15 @@ export default function DashboardPage() {
 function TripColumn({
   eyebrow,
   groupedTrips,
-  empty
+  empty,
+  getMemberCount,
+  getAttention
 }: {
   eyebrow: string;
-  groupedTrips: Record<string, ReturnType<ReturnType<typeof useAppState>["getVisibleTrips"]>["created"]>;
+  groupedTrips: Record<string, Trip[]>;
   empty: string;
+  getMemberCount: (tripId: string) => number;
+  getAttention: (trip: Trip) => string | null;
 }) {
   const groups = Object.entries(groupedTrips);
 
@@ -103,24 +128,35 @@ function TripColumn({
                 {groupName}
               </p>
               <div className="space-y-3">
-                {trips.map((trip) => (
-                  <Link
-                    key={trip.id}
-                    href={`/trips/${trip.id}`}
-                    className="block rounded-[1.75rem] border border-ink/8 bg-white/75 p-4 transition hover:-translate-y-0.5 hover:border-lagoon"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="text-lg font-semibold text-ink">{trip.title}</p>
-                        <p className="mt-1 text-sm text-stone-600">{trip.summary}</p>
+                {trips.map((trip) => {
+                  const memberCount = getMemberCount(trip.id);
+                  const attention = getAttention(trip);
+                  return (
+                    <Link
+                      key={trip.id}
+                      href={`/trips/${trip.id}`}
+                      className="block rounded-[1.75rem] border border-ink/8 bg-white/75 p-4 transition hover:-translate-y-0.5 hover:border-lagoon"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-lg font-semibold text-ink">{trip.title}</p>
+                          <p className="mt-1 text-sm text-stone-600">{trip.summary}</p>
+                        </div>
+                        <StatusBadge status={trip.status} />
                       </div>
-                      <StatusBadge status={trip.status} />
-                    </div>
-                    <p className="mt-4 text-xs uppercase tracking-[0.25em] text-stone-500">
-                      {formatDate(trip.tentativeStart)} to {formatDate(trip.tentativeEnd)}
-                    </p>
-                  </Link>
-                ))}
+                      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs uppercase tracking-[0.25em] text-stone-500">
+                        <span>
+                          {formatDate(trip.tentativeStart)} – {formatDate(trip.tentativeEnd)}
+                        </span>
+                        <span>{trip.tripDuration}d trip</span>
+                        <span>{memberCount} {memberCount === 1 ? "member" : "members"}</span>
+                      </div>
+                      {attention && (
+                        <p className="mt-2 text-xs font-medium text-coral">{attention}</p>
+                      )}
+                    </Link>
+                  );
+                })}
               </div>
             </div>
           ))}

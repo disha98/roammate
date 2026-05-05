@@ -1,11 +1,12 @@
 "use client";
 
 import Image from "next/image";
-import { FormEvent, useEffect, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useRef, useState } from "react";
 import { AppShell } from "@/components/app-shell";
 import { RequireAuth } from "@/components/require-auth";
 import { Button, Input, Panel, Select } from "@/components/ui";
 import { useAppState } from "@/context/app-state";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { formatMonthDay, getInitials } from "@/lib/utils";
 
 export default function ProfilePage() {
@@ -21,11 +22,13 @@ export default function ProfilePage() {
   const [homeCity, setHomeCity] = useState("");
   const [passport, setPassport] = useState("");
   const [photoUrl, setPhotoUrl] = useState("");
+  const [uploading, setUploading] = useState(false);
   const [label, setLabel] = useState("");
   const [startMonthDay, setStartMonthDay] = useState("08-01");
   const [endMonthDay, setEndMonthDay] = useState("08-31");
   const [countryCodes, setCountryCodes] = useState<string[]>([]);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!currentProfile) {
@@ -79,9 +82,38 @@ export default function ProfilePage() {
     }
   }
 
-  function handleWindowSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handlePhotoUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file || !currentProfile) return;
+
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+
+    setUploading(true);
+    try {
+      const ext = file.name.split(".").pop() ?? "jpg";
+      const path = `${currentProfile.id}/avatar.${ext}`;
+
+      const { error } = await supabase.storage
+        .from("avatars")
+        .upload(path, file, { upsert: true, contentType: file.type });
+
+      if (error) {
+        console.error("Upload failed:", error.message);
+        return;
+      }
+
+      const { data: publicUrlData } = supabase.storage.from("avatars").getPublicUrl(path);
+      const url = `${publicUrlData.publicUrl}?t=${Date.now()}`;
+      setPhotoUrl(url);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleWindowSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    addProfileAvailabilityWindow({ label, startMonthDay, endMonthDay });
+    await addProfileAvailabilityWindow({ label, startMonthDay, endMonthDay });
     setLabel("");
   }
 
@@ -127,7 +159,26 @@ export default function ProfilePage() {
                   </option>
                 ))}
               </Select>
-              <Input value={photoUrl} onChange={(event) => setPhotoUrl(event.target.value)} placeholder="Profile photo URL" />
+              <div>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handlePhotoUpload}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                  className="rounded-full border border-ink/12 bg-mist px-4 py-2 text-sm font-medium text-ink transition hover:bg-lagoon/10 disabled:opacity-50"
+                >
+                  {uploading ? "Uploading..." : photoUrl ? "Change photo" : "Upload photo"}
+                </button>
+                {photoUrl && (
+                  <span className="ml-3 text-xs text-stone-500">Photo set</span>
+                )}
+              </div>
               <div className="flex items-center gap-3">
                 <Button type="submit" disabled={saveState === "saving"}>
                   {saveState === "saving" ? "Saving..." : "Save profile"}
@@ -172,7 +223,7 @@ export default function ProfilePage() {
                         {formatMonthDay(window.startMonthDay)} to {formatMonthDay(window.endMonthDay)}
                       </p>
                     </div>
-                    <button className="text-sm font-semibold text-coral" onClick={() => removeProfileAvailabilityWindow(window.id)} type="button">
+                    <button className="text-sm font-semibold text-coral" onClick={() => void removeProfileAvailabilityWindow(window.id)} type="button">
                       Remove
                     </button>
                   </div>
