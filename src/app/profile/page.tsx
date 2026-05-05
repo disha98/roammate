@@ -67,12 +67,16 @@ export default function ProfilePage() {
 
   const availabilityWindows = getProfileAvailabilityWindows();
 
-  function handleProfileSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleProfileSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaveState("saving");
-    updateCurrentProfile({ displayName, homeCity, passport, photoUrl });
-    setSaveState("saved");
-    window.setTimeout(() => setSaveState("idle"), 1800);
+    try {
+      await updateCurrentProfile({ displayName, homeCity, passport, photoUrl });
+      setSaveState("saved");
+      window.setTimeout(() => setSaveState("idle"), 1800);
+    } catch {
+      setSaveState("idle");
+    }
   }
 
   function handleWindowSubmit(event: FormEvent<HTMLFormElement>) {

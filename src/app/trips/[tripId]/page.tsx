@@ -19,6 +19,7 @@ export default function TripWorkspacePage() {
   const params = useParams<{ tripId: string }>();
   const {
     currentProfile,
+    isPending,
     getTripById,
     getTripMembers,
     getTripInvites,
@@ -134,6 +135,19 @@ export default function TripWorkspacePage() {
     }));
   }, [availability, members]);
 
+  if (!trip && isPending) {
+    return (
+      <RequireAuth>
+        <AppShell>
+          <Panel className="p-10 text-center">
+            <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Loading trip</p>
+            <p className="section-title mt-4 text-4xl">Opening your planning workspace…</p>
+          </Panel>
+        </AppShell>
+      </RequireAuth>
+    );
+  }
+
   if (!trip) {
     return (
       <RequireAuth>
@@ -152,21 +166,21 @@ export default function TripWorkspacePage() {
 
   const activeTrip = trip;
 
-  function handleEmailInvite(event: FormEvent<HTMLFormElement>) {
+  async function handleEmailInvite(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!isPlanner) {
       return;
     }
-    inviteByEmail(activeTrip.id, inviteEmail);
+    await inviteByEmail(activeTrip.id, inviteEmail);
     setInviteEmail("");
   }
 
-  function handleGenerateLink() {
+  async function handleGenerateLink() {
     if (!isPlanner) {
       return;
     }
 
-    const invite = createInviteLink(activeTrip.id);
+    const invite = await createInviteLink(activeTrip.id);
     setGeneratedLink(`${window.location.origin}/invite/${invite.token}`);
   }
 
@@ -221,6 +235,7 @@ export default function TripWorkspacePage() {
               onEmailInvite={handleEmailInvite}
               onGenerateLink={handleGenerateLink}
               onRevokeInvite={revokeInvite}
+              onAdvanceToPlanning={updateTripStatus}
               isPlanner={isPlanner}
             />
           ) : null}
@@ -296,7 +311,7 @@ function TripHero({
 }: {
   trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
   isPlanner: boolean;
-  onStatusChange: (tripId: string, status: TripStatus) => void;
+  onStatusChange: (tripId: string, status: TripStatus) => Promise<void>;
   canOpenVoting: boolean;
 }) {
   return (
@@ -335,7 +350,7 @@ function TripHero({
                       ? "bg-white text-ink hover:bg-white"
                       : "border-white/10 bg-white/10 text-white hover:border-white/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
                   }
-                  onClick={() => onStatusChange(trip.id, status)}
+                  onClick={() => void onStatusChange(trip.id, status)}
                 >
                   {statusLabel(status)}
                 </Button>
@@ -370,6 +385,7 @@ function CollectingMembersStage({
   onEmailInvite,
   onGenerateLink,
   onRevokeInvite,
+  onAdvanceToPlanning,
   isPlanner
 }: {
   trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
@@ -379,9 +395,10 @@ function CollectingMembersStage({
   inviteEmail: string;
   setInviteEmail: (value: string) => void;
   generatedLink: string;
-  onEmailInvite: (event: FormEvent<HTMLFormElement>) => void;
-  onGenerateLink: () => void;
-  onRevokeInvite: (inviteId: string) => void;
+  onEmailInvite: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onGenerateLink: () => Promise<void>;
+  onRevokeInvite: (inviteId: string) => Promise<void>;
+  onAdvanceToPlanning: (tripId: string, status: TripStatus) => Promise<void>;
   isPlanner: boolean;
 }) {
   return (
@@ -417,7 +434,7 @@ function CollectingMembersStage({
         <h2 className="section-title mt-2 text-3xl">Bring everyone into the trip.</h2>
         {isPlanner ? (
           <>
-            <form className="mt-5 flex gap-3" onSubmit={onEmailInvite}>
+            <form className="mt-5 flex gap-3" onSubmit={(event) => void onEmailInvite(event)}>
               <Input
                 type="email"
                 value={inviteEmail}
@@ -434,7 +451,7 @@ function CollectingMembersStage({
                     Friends can preview the trip before they sign in and join.
                   </p>
                 </div>
-                <Button variant="secondary" onClick={onGenerateLink}>
+                <Button variant="secondary" onClick={() => void onGenerateLink()}>
                   Create link
                 </Button>
               </div>
@@ -451,40 +468,47 @@ function CollectingMembersStage({
             into planning.
           </div>
         )}
-        <div className="mt-5">
-          <p className="text-sm font-semibold text-ink">Invite activity</p>
-          <div className="mt-3 space-y-2">
-            {invites.length === 0 ? (
-              <div className="rounded-2xl bg-white/70 px-3 py-2 text-sm text-stone-500">
-                No invites sent yet.
-              </div>
-            ) : (
-              invites.map((invite) => (
-                <div key={invite.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white/70 px-3 py-2 text-sm text-stone-600">
-                  <span>
-                    {invite.type === "email" ? `Invite sent to ${invite.email}` : "Share link ready"} ·{" "}
-                    {inviteStatusLabel(getInviteStatus(invite))}
-                  </span>
-                  {isPlanner && getInviteStatus(invite) === "pending" ? (
-                    <button
-                      type="button"
-                      className="font-semibold text-coral"
-                      onClick={() => onRevokeInvite(invite.id)}
-                    >
-                      Revoke
-                    </button>
-                  ) : null}
+        {isPlanner ? (
+          <div className="mt-5">
+            <p className="text-sm font-semibold text-ink">Invite activity</p>
+            <div className="mt-3 space-y-2">
+              {invites.length === 0 ? (
+                <div className="rounded-2xl bg-white/70 px-3 py-2 text-sm text-stone-500">
+                  No invites sent yet.
                 </div>
-              ))
-            )}
+              ) : (
+                invites.map((invite) => (
+                  <div key={invite.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white/70 px-3 py-2 text-sm text-stone-600">
+                    <span>
+                      {invite.type === "email" ? `Invite sent to ${invite.email}` : "Share link ready"} ·{" "}
+                      {inviteStatusLabel(getInviteStatus(invite))}
+                    </span>
+                    {getInviteStatus(invite) === "pending" ? (
+                      <button
+                        type="button"
+                        className="font-semibold text-coral"
+                        onClick={() => void onRevokeInvite(invite.id)}
+                      >
+                        Revoke
+                      </button>
+                    ) : null}
+                  </div>
+                ))
+              )}
+            </div>
           </div>
-        </div>
+        ) : null}
         <div className="mt-5 rounded-[1.75rem] bg-ink p-4 text-white">
           <p className="text-sm uppercase tracking-[0.3em] text-sun">Next step</p>
           <p className="mt-2 text-sm text-stone-200">
             When the group is in place, move this trip to Planning so everyone can share dates and
             compare destinations.
           </p>
+          {isPlanner ? (
+            <Button className="mt-4" onClick={() => void onAdvanceToPlanning(trip.id, "planning")}>
+              Move to planning
+            </Button>
+          ) : null}
         </div>
       </Panel>
     </div>

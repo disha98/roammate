@@ -27,28 +27,40 @@ The app already has the main product flow working in the UI:
 9. A live destination search flow backed by Open-Meteo geocoding, plus snapshot storage for selected cities.
 10. A small curated fallback destination seed for demo data only.
 11. Availability suggestions, final shortlist selection, and voting screens.
+12. Supabase-backed auth, trips, trip members, and trip invites.
+13. Provider-backed searched-city image lookup with a designed placeholder fallback.
 
 ## Product progress
 
-This project is currently in a polished demo stage.
+This project is now in a hybrid v2 checkpoint.
 
 - The user experience is in place.
+- The core trip/account layer is persisted in Supabase.
 - The trip planning flow is clear.
 - The profile and planning data model are set up.
 - Visa data is real and backed by a stored dataset snapshot.
 - Weather summaries are based on the planned trip month rather than today’s current conditions.
 - Destination search is live and not limited to a hardcoded list.
-- The app still uses local demo state rather than Supabase persistence for everything.
+- The entire app requires login.
+- Availability, destinations, shortlist state, votes, and final date options are still local-only for now.
 
 ## Current plan
 
-The next real product step is to move the demo state into Supabase so that:
+The next real product step is to move the remaining planning state into Supabase so that:
 
-- auth is real,
-- trips and members persist across sessions,
-- invites are stored and accepted reliably,
 - profile availability and trip availability are shared across users,
+- destination shortlist state syncs across users,
 - votes and final decisions are backed by the database.
+
+## Environment
+
+Local development expects:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+- `UNSPLASH_ACCESS_KEY`
+
+Auth currently uses Supabase email/password sign-in and account creation from `/login`.
 
 ## Main screens
 
@@ -56,6 +68,8 @@ The next real product step is to move the demo state into Supabase so that:
 - `Trip` - the planning workspace for one trip.
 - `Profile & settings` - your personal planning profile.
 - `Invite preview` - lets someone join a trip from a shareable link.
+
+For a focused summary of what changed in this v2 checkpoint, see [README-v2.md](/Users/dishajanardhan/DesignBuildShip/MyTravelPlanner/README-v2.md).
 
 ## Local development
 

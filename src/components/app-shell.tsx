@@ -71,7 +71,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <p className="text-sm text-stone-500">{currentProfile?.email}</p>
               </div>
             </div>
-            <Button className="mt-4 w-full" variant="secondary" onClick={logout}>
+            <Button className="mt-4 w-full" variant="secondary" onClick={() => void logout()}>
               Log out
             </Button>
             </div>

@@ -3,20 +3,23 @@
 import { FormEvent, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Button, Input, Panel, Select } from "@/components/ui";
+import { Button, Input, Panel } from "@/components/ui";
 import { useAppState } from "@/context/app-state";
-
-const passportOptions = ["US", "GB", "IN", "CA"];
 
 export default function LoginPage() {
   const router = useRouter();
-  const { currentProfile, isReady, login } = useAppState();
-  const [email, setEmail] = useState("maya@example.com");
-  const [displayName, setDisplayName] = useState("Maya");
-  const [homeCity, setHomeCity] = useState("Chicago");
-  const [passport, setPassport] = useState("US");
+  const { currentProfile, isConfigured, isPending, isReady, joinTripByInviteToken, login } =
+    useAppState();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [mode, setMode] = useState<"login" | "signup">("login");
   const [nextPath, setNextPath] = useState("/dashboard");
   const [inviteToken, setInviteToken] = useState<string | undefined>();
+  const [authState, setAuthState] = useState<
+    "idle" | "submitting" | "signed_up" | "error"
+  >("idle");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [hasCompletedRedirect, setHasCompletedRedirect] = useState(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -25,22 +28,34 @@ export default function LoginPage() {
   }, []);
 
   useEffect(() => {
-    if (!isReady || !currentProfile) {
+    if (!isReady || !currentProfile || hasCompletedRedirect) {
       return;
     }
-    router.replace(nextPath);
-  }, [currentProfile, isReady, nextPath, router]);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    setHasCompletedRedirect(true);
+    void (async () => {
+      if (inviteToken) {
+        const joinedTripId = await joinTripByInviteToken(inviteToken);
+        router.replace(joinedTripId ? `/trips/${joinedTripId}` : nextPath);
+        return;
+      }
+
+      router.replace(nextPath);
+    })();
+  }, [currentProfile, hasCompletedRedirect, inviteToken, isReady, joinTripByInviteToken, nextPath, router]);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const joinedTripId = login({ email, displayName, homeCity, passport }, inviteToken);
+    setAuthState("submitting");
+    setErrorMessage("");
 
-    if (joinedTripId) {
-      router.push(`/trips/${joinedTripId}`);
-      return;
+    try {
+      await login({ email, password, mode, nextPath, inviteToken });
+      setAuthState(mode === "signup" ? "signed_up" : "idle");
+    } catch (error) {
+      setAuthState("error");
+      setErrorMessage((error as Error).message || "We couldn’t complete sign-in right now.");
     }
-
-    router.push(nextPath);
   }
 
   return (
@@ -50,15 +65,15 @@ export default function LoginPage() {
           <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Planner Login</p>
           <h1 className="section-title mt-4 text-5xl leading-tight">Open the dashboard, keep every trip thread visible.</h1>
           <p className="mt-5 text-sm text-stone-600">
-            Sign in with a name, home city, and passport so your trips can use availability, visa,
-            and destination context from the start.
+            Sign in with your email and password. If you are new here, create an account first and
+            then continue into the app.
           </p>
           <div className="mt-8 rounded-[2rem] bg-ink px-5 py-6 text-white">
-            <p className="text-sm uppercase tracking-[0.3em] text-sun">Quick start profiles</p>
+            <p className="text-sm uppercase tracking-[0.3em] text-sun">How it works</p>
             <ul className="mt-4 space-y-3 text-sm text-stone-200">
-              <li>`maya@example.com` / US / Chicago</li>
-              <li>`ana@example.com` / GB / London</li>
-              <li>`rohan@example.com` / IN / Bengaluru</li>
+              <li>Create an account with email and password once.</li>
+              <li>Use the same credentials to return to any trip or invite.</li>
+              <li>Finish your profile inside the app after sign-in.</li>
             </ul>
           </div>
           <Link href="/" className="mt-6 inline-block text-sm font-semibold text-lagoon">
@@ -70,26 +85,68 @@ export default function LoginPage() {
             <div>
               <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Sign in</p>
               <p className="mt-2 text-sm text-stone-600">
-                Use one of the sample profiles above or enter your own details.
+                Use your Roammate email and password to access the app.
               </p>
             </div>
-            <Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Display name" />
+            <div className="grid grid-cols-2 gap-2 rounded-[1.5rem] bg-mist p-1">
+              <button
+                type="button"
+                className={`rounded-[1.1rem] px-4 py-2 text-sm font-semibold transition ${
+                  mode === "login" ? "bg-white text-ink shadow-sm" : "text-stone-500"
+                }`}
+                onClick={() => setMode("login")}
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                className={`rounded-[1.1rem] px-4 py-2 text-sm font-semibold transition ${
+                  mode === "signup" ? "bg-white text-ink shadow-sm" : "text-stone-500"
+                }`}
+                onClick={() => setMode("signup")}
+              >
+                Create account
+              </button>
+            </div>
             <Input
+              required
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="Email"
             />
-            <Input value={homeCity} onChange={(event) => setHomeCity(event.target.value)} placeholder="Home city" />
-            <Select value={passport} onChange={(event) => setPassport(event.target.value)}>
-              {passportOptions.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </Select>
-            <Button className="w-full" type="submit">
-              Open dashboard
+            <Input
+              required
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Password"
+            />
+            {!isConfigured ? (
+              <div className="rounded-[1.5rem] border border-coral/20 bg-coral/5 px-4 py-3 text-sm text-coral">
+                Supabase auth is not configured yet. Add `NEXT_PUBLIC_SUPABASE_URL` and
+                `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` before signing in.
+              </div>
+            ) : null}
+            {authState === "signed_up" ? (
+              <div className="rounded-[1.5rem] border border-lagoon/20 bg-lagoon/5 px-4 py-3 text-sm text-lagoon">
+                Account created. If your Supabase project requires email confirmation, verify the
+                address first, then sign in with the same password.
+              </div>
+            ) : null}
+            {authState === "error" ? (
+              <div className="rounded-[1.5rem] border border-coral/20 bg-coral/5 px-4 py-3 text-sm text-coral">
+                {errorMessage || "We couldn’t complete sign-in right now."}
+              </div>
+            ) : null}
+            <Button className="w-full" type="submit" disabled={!isConfigured || isPending || authState === "submitting"}>
+              {authState === "submitting"
+                ? mode === "signup"
+                  ? "Creating account..."
+                  : "Signing in..."
+                : mode === "signup"
+                  ? "Create account"
+                  : "Sign in"}
             </Button>
           </form>
         </Panel>

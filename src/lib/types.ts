@@ -84,6 +84,7 @@ export interface DestinationCatalogItem {
   summary: string;
   population?: number;
   source?: "catalog" | "search";
+  imageSource?: "catalog" | "provider" | "placeholder";
 }
 
 export interface TripDestination {

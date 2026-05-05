@@ -5,14 +5,14 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useState,
-  useTransition
+  useRef,
+  useState
 } from "react";
+import type { User } from "@supabase/supabase-js";
 import { computeDateWindowOptions } from "@/lib/availability";
-import { initialAppState } from "@/lib/demo-data";
 import { destinationCatalog } from "@/lib/destinations";
+import { getSupabaseBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import type {
-  AppState,
   AvailabilityRange,
   DateWindowOption,
   DestinationCatalogItem,
@@ -29,28 +29,60 @@ import type {
 } from "@/lib/types";
 import { createId } from "@/lib/utils";
 
-const STORAGE_KEY = "roammate-app-state-v1";
+const LOCAL_PLANNING_STORAGE_PREFIX = "roammate-planning-state-v2";
 
-function normalizeState(candidate: Partial<AppState> | AppState): AppState {
+interface PersistedState {
+  profiles: Profile[];
+  currentProfileId: string | null;
+  trips: Trip[];
+  tripMembers: TripMember[];
+  tripInvites: TripInvite[];
+}
+
+interface LocalPlanningState {
+  profileAvailabilityWindows: ProfileAvailabilityWindow[];
+  availabilityRanges: AvailabilityRange[];
+  tripDestinations: TripDestination[];
+  votes: Vote[];
+  tripFinalDateOptionIds: Record<string, string[]>;
+}
+
+const emptyPersistedState: PersistedState = {
+  profiles: [],
+  currentProfileId: null,
+  trips: [],
+  tripMembers: [],
+  tripInvites: []
+};
+
+const emptyPlanningState: LocalPlanningState = {
+  profileAvailabilityWindows: [],
+  availabilityRanges: [],
+  tripDestinations: [],
+  votes: [],
+  tripFinalDateOptionIds: {}
+};
+
+function normalizePlanningState(candidate: Partial<LocalPlanningState> | null | undefined): LocalPlanningState {
   return {
-    profiles: candidate.profiles ?? initialAppState.profiles,
-    currentProfileId:
-      candidate.currentProfileId === undefined
-        ? initialAppState.currentProfileId
-        : candidate.currentProfileId,
-    trips: (candidate.trips ?? initialAppState.trips).map((trip) => ({
-      ...trip,
-      finalDateOptionIds: trip.finalDateOptionIds ?? [],
-      decidedAt: trip.decidedAt
-    })),
-    tripMembers: candidate.tripMembers ?? initialAppState.tripMembers,
-    tripInvites: candidate.tripInvites ?? initialAppState.tripInvites,
-    profileAvailabilityWindows:
-      candidate.profileAvailabilityWindows ?? initialAppState.profileAvailabilityWindows,
-    availabilityRanges: candidate.availabilityRanges ?? initialAppState.availabilityRanges,
-    tripDestinations: candidate.tripDestinations ?? initialAppState.tripDestinations,
-    votes: candidate.votes ?? initialAppState.votes
+    profileAvailabilityWindows: candidate?.profileAvailabilityWindows ?? [],
+    availabilityRanges: candidate?.availabilityRanges ?? [],
+    tripDestinations: candidate?.tripDestinations ?? [],
+    votes: candidate?.votes ?? [],
+    tripFinalDateOptionIds: candidate?.tripFinalDateOptionIds ?? {}
   };
+}
+
+function getPlanningStorageKey(profileId: string) {
+  return `${LOCAL_PLANNING_STORAGE_PREFIX}:${profileId}`;
+}
+
+function createUuid(prefix: string) {
+  return globalThis.crypto?.randomUUID?.() ?? createId(prefix);
+}
+
+function createInviteToken() {
+  return globalThis.crypto?.randomUUID?.().replace(/-/g, "") ?? createId("invite");
 }
 
 function getInviteStatus(invite: TripInvite): InviteStatus {
@@ -79,9 +111,10 @@ interface CreateTripInput {
 
 interface LoginInput {
   email: string;
-  displayName: string;
-  homeCity: string;
-  passport: string;
+  password: string;
+  mode: "login" | "signup";
+  nextPath?: string;
+  inviteToken?: string;
 }
 
 interface UpdateProfileInput {
@@ -91,27 +124,34 @@ interface UpdateProfileInput {
   photoUrl: string;
 }
 
+interface InvitePreview {
+  invite: TripInvite | undefined;
+  trip: Trip | undefined;
+  planner: Profile | undefined;
+  memberCount: number;
+}
+
 interface AppStateValue {
-  state: AppState;
+  isConfigured: boolean;
   isReady: boolean;
   isPending: boolean;
   currentProfile: Profile | null;
-  login: (input: LoginInput, inviteToken?: string) => string | undefined;
-  logout: () => void;
-  updateCurrentProfile: (input: UpdateProfileInput) => void;
+  login: (input: LoginInput) => Promise<void>;
+  logout: () => Promise<void>;
+  updateCurrentProfile: (input: UpdateProfileInput) => Promise<void>;
   addProfileAvailabilityWindow: (input: {
     label: string;
     startMonthDay: string;
     endMonthDay: string;
   }) => void;
   removeProfileAvailabilityWindow: (windowId: string) => void;
-  createTrip: (input: CreateTripInput) => string;
-  updateTripStatus: (tripId: string, status: TripStatus) => void;
+  createTrip: (input: CreateTripInput) => Promise<string>;
+  updateTripStatus: (tripId: string, status: TripStatus) => Promise<void>;
   setFinalDateOptions: (tripId: string, optionIds: string[]) => void;
-  createInviteLink: (tripId: string) => TripInvite;
-  inviteByEmail: (tripId: string, email: string) => void;
-  revokeInvite: (inviteId: string) => void;
-  joinTripByInviteToken: (token: string) => string | undefined;
+  createInviteLink: (tripId: string) => Promise<TripInvite>;
+  inviteByEmail: (tripId: string, email: string) => Promise<void>;
+  revokeInvite: (inviteId: string) => Promise<void>;
+  joinTripByInviteToken: (token: string) => Promise<string | undefined>;
   addAvailability: (tripId: string, startDate: string, endDate: string) => void;
   removeAvailability: (rangeId: string) => void;
   addDestinationToTrip: (tripId: string, destination: DestinationCatalogItem, note: string) => void;
@@ -122,7 +162,9 @@ interface AppStateValue {
   getTripInvites: (tripId: string) => TripInvite[];
   getInviteStatus: (invite: TripInvite) => InviteStatus;
   getFinalDateOptions: (tripId: string) => DateWindowOption[];
-  getTripDestinations: (tripId: string) => (TripDestination & { destination: typeof destinationCatalog[number] | undefined })[];
+  getTripDestinations: (tripId: string) => (TripDestination & {
+    destination: DestinationCatalogItem | undefined;
+  })[];
   getTripAvailability: (tripId: string) => AvailabilityRange[];
   getProfileAvailabilityWindows: (profileId?: string) => ProfileAvailabilityWindow[];
   getSuggestedProfileAvailability: (
@@ -133,12 +175,7 @@ interface AppStateValue {
   getVoteForCurrentUser: (tripId: string, type: VoteType) => Vote | undefined;
   getVotesForTrip: (tripId: string, type: VoteType) => Vote[];
   getVisibleTrips: () => { created: Trip[]; joined: Trip[] };
-  getInvitePreview: (token: string) => {
-    invite: TripInvite | undefined;
-    trip: Trip | undefined;
-    planner: Profile | undefined;
-    memberCount: number;
-  };
+  getInvitePreview: (token: string) => Promise<InvitePreview>;
 }
 
 const AppStateContext = createContext<AppStateValue | null>(null);
@@ -147,111 +184,431 @@ function sortTrips(trips: Trip[]) {
   return [...trips].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
 
+function mapProfile(row: {
+  id: string;
+  email: string;
+  display_name: string;
+  home_city: string | null;
+  passport: string | null;
+  photo_url: string | null;
+  created_at: string;
+}): Profile {
+  return {
+    id: row.id,
+    email: row.email,
+    displayName: row.display_name,
+    homeCity: row.home_city ?? "",
+    passport: row.passport ?? "",
+    photoUrl: row.photo_url ?? undefined,
+    createdAt: row.created_at
+  };
+}
+
+function mapTrip(row: {
+  id: string;
+  creator_profile_id: string;
+  title: string;
+  group_name: string;
+  summary: string;
+  tentative_start: string;
+  tentative_end: string;
+  status: TripStatus;
+  created_at: string;
+  decided_at: string | null;
+}): Trip {
+  return {
+    id: row.id,
+    title: row.title,
+    groupName: row.group_name,
+    summary: row.summary,
+    tentativeStart: row.tentative_start,
+    tentativeEnd: row.tentative_end,
+    creatorProfileId: row.creator_profile_id,
+    finalDateOptionIds: [],
+    status: row.status,
+    createdAt: row.created_at,
+    decidedAt: row.decided_at ?? undefined
+  };
+}
+
+function mapTripMember(row: {
+  id: string;
+  trip_id: string;
+  profile_id: string;
+  role: "planner" | "member";
+  joined_at: string;
+}): TripMember {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    profileId: row.profile_id,
+    role: row.role,
+    joinedAt: row.joined_at
+  };
+}
+
+function mapTripInvite(row: {
+  id: string;
+  trip_id: string;
+  type: "email" | "link";
+  token: string;
+  email: string | null;
+  created_at: string;
+  expires_at: string | null;
+  accepted_at: string | null;
+  revoked_at: string | null;
+}): TripInvite {
+  return {
+    id: row.id,
+    tripId: row.trip_id,
+    type: row.type,
+    token: row.token,
+    email: row.email ?? undefined,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at ?? undefined,
+    acceptedAt: row.accepted_at ?? undefined,
+    revokedAt: row.revoked_at ?? undefined
+  };
+}
+
+async function loadPersistedStateForUser(userId: string) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase) {
+    return emptyPersistedState;
+  }
+
+  const [profileResult, createdTripsResult, membershipResult] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select("id, email, display_name, home_city, passport, photo_url, created_at")
+      .eq("id", userId)
+      .maybeSingle(),
+    supabase
+      .from("trips")
+      .select(
+        "id, creator_profile_id, title, group_name, summary, tentative_start, tentative_end, status, created_at, decided_at"
+      )
+      .eq("creator_profile_id", userId),
+    supabase
+      .from("trip_members")
+      .select("id, trip_id, profile_id, role, joined_at")
+      .eq("profile_id", userId)
+  ]);
+
+  const createdTrips = (createdTripsResult.data ?? []).map(mapTrip);
+  const membershipRows = (membershipResult.data ?? []).map(mapTripMember);
+  const visibleTripIds = new Set([
+    ...createdTrips.map((trip) => trip.id),
+    ...membershipRows.map((member) => member.tripId)
+  ]);
+
+  const tripIds = Array.from(visibleTripIds);
+
+  const [joinedTripsResult, allMembersResult, invitesResult] = tripIds.length
+    ? await Promise.all([
+        supabase
+          .from("trips")
+          .select(
+            "id, creator_profile_id, title, group_name, summary, tentative_start, tentative_end, status, created_at, decided_at"
+          )
+          .in("id", tripIds),
+        supabase
+          .from("trip_members")
+          .select("id, trip_id, profile_id, role, joined_at")
+          .in("trip_id", tripIds),
+        supabase
+          .from("trip_invites")
+          .select(
+            "id, trip_id, type, token, email, created_at, expires_at, accepted_at, revoked_at"
+          )
+          .in("trip_id", tripIds)
+      ])
+    : [{ data: [] }, { data: [] }, { data: [] }];
+
+  const tripById = new Map<string, Trip>();
+  for (const trip of [...createdTrips, ...((joinedTripsResult.data ?? []) as never[]).map(mapTrip)]) {
+    tripById.set(trip.id, trip);
+  }
+
+  const trips = sortTrips(Array.from(tripById.values()));
+  const tripMembers = ((allMembersResult.data ?? []) as never[]).map(mapTripMember);
+  const tripInvites = ((invitesResult.data ?? []) as never[]).map(mapTripInvite);
+
+  const relatedProfileIds = new Set<string>([userId]);
+  for (const member of tripMembers) {
+    relatedProfileIds.add(member.profileId);
+  }
+  for (const trip of trips) {
+    relatedProfileIds.add(trip.creatorProfileId);
+  }
+
+  const profilesResult = relatedProfileIds.size
+    ? await supabase
+        .from("profiles")
+        .select("id, email, display_name, home_city, passport, photo_url, created_at")
+        .in("id", Array.from(relatedProfileIds))
+    : { data: [] };
+
+  const profiles = ((profilesResult.data ?? []) as never[]).map(mapProfile);
+  if (profileResult.data) {
+    const current = mapProfile(profileResult.data);
+    if (!profiles.some((profile) => profile.id === current.id)) {
+      profiles.unshift(current);
+    }
+  }
+
+  return {
+    profiles,
+    currentProfileId: userId,
+    trips,
+    tripMembers,
+    tripInvites
+  };
+}
+
+async function ensureProfile(user: User) {
+  const supabase = getSupabaseBrowserClient();
+  if (!supabase || !user.email) {
+    return null;
+  }
+
+  const email = user.email.trim().toLowerCase();
+  const { data: existing } = await supabase
+    .from("profiles")
+    .select("id, email, display_name, home_city, passport, photo_url, created_at")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (existing) {
+    return mapProfile(existing);
+  }
+
+  const fallbackName = email.split("@")[0]?.replace(/[._-]+/g, " ") ?? "Traveler";
+  const displayName = fallbackName
+    .split(" ")
+    .filter(Boolean)
+    .map((part) => part[0]?.toUpperCase() + part.slice(1))
+    .join(" ");
+
+  const inserted = await supabase
+    .from("profiles")
+    .insert({
+      id: user.id,
+      email,
+      display_name: displayName || "Traveler",
+      home_city: "",
+      passport: "",
+      photo_url: null
+    })
+    .select("id, email, display_name, home_city, passport, photo_url, created_at")
+    .single();
+
+  return inserted.data ? mapProfile(inserted.data) : null;
+}
+
+function applyTripLocalState(trip: Trip, localPlanningState: LocalPlanningState): Trip {
+  return {
+    ...trip,
+    finalDateOptionIds: localPlanningState.tripFinalDateOptionIds[trip.id] ?? trip.finalDateOptionIds
+  };
+}
+
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
-  const [state, setState] = useState<AppState>(initialAppState);
+  const [persistedState, setPersistedState] = useState<PersistedState>(emptyPersistedState);
+  const [localPlanningState, setLocalPlanningState] = useState<LocalPlanningState>(emptyPlanningState);
   const [isReady, setIsReady] = useState(false);
-  const [isPending, startTransition] = useTransition();
+  const [isPending, setIsPending] = useState(false);
+  const loadIdRef = useRef(0);
+  const configured = isSupabaseConfigured();
+
+  async function refreshForUser(userId: string) {
+    const nextState = await loadPersistedStateForUser(userId);
+    setPersistedState(nextState);
+
+    const raw = window.localStorage.getItem(getPlanningStorageKey(userId));
+    setLocalPlanningState(normalizePlanningState(raw ? (JSON.parse(raw) as Partial<LocalPlanningState>) : null));
+  }
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      setState(normalizeState(JSON.parse(raw) as Partial<AppState>));
+    const client = getSupabaseBrowserClient();
+    if (!client) {
+      setIsReady(true);
+      return;
     }
-    setIsReady(true);
+    const supabase = client;
+
+    let active = true;
+    const loadId = ++loadIdRef.current;
+
+    async function syncFromSession() {
+      setIsPending(true);
+      const {
+        data: { session }
+      } = await supabase.auth.getSession();
+
+      if (!active || loadId !== loadIdRef.current) {
+        return;
+      }
+
+      if (!session?.user) {
+        setPersistedState(emptyPersistedState);
+        setLocalPlanningState(emptyPlanningState);
+        setIsPending(false);
+        setIsReady(true);
+        return;
+      }
+
+      await ensureProfile(session.user);
+      await refreshForUser(session.user.id);
+
+      if (!active || loadId !== loadIdRef.current) {
+        return;
+      }
+
+      setIsPending(false);
+      setIsReady(true);
+    }
+
+    void syncFromSession();
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const nextLoadId = ++loadIdRef.current;
+      setIsPending(true);
+      void (async () => {
+        if (!session?.user) {
+          if (active && nextLoadId === loadIdRef.current) {
+            setPersistedState(emptyPersistedState);
+            setLocalPlanningState(emptyPlanningState);
+            setIsPending(false);
+            setIsReady(true);
+          }
+          return;
+        }
+
+        await ensureProfile(session.user);
+        await refreshForUser(session.user.id);
+
+        if (active && nextLoadId === loadIdRef.current) {
+          setIsPending(false);
+          setIsReady(true);
+        }
+      })();
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
-    if (!isReady) {
+    if (!isReady || !persistedState.currentProfileId) {
       return;
     }
 
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(normalizeState(state)));
-  }, [state, isReady]);
+    window.localStorage.setItem(
+      getPlanningStorageKey(persistedState.currentProfileId),
+      JSON.stringify(localPlanningState)
+    );
+  }, [isReady, localPlanningState, persistedState.currentProfileId]);
 
-  const currentProfile = state.profiles.find((profile) => profile.id === state.currentProfileId) ?? null;
-
-  const updateState = (updater: (previous: AppState) => AppState) => {
-    startTransition(() => {
-      setState((previous) => updater(previous));
-    });
-  };
+  const currentProfile =
+    persistedState.profiles.find((profile) => profile.id === persistedState.currentProfileId) ?? null;
 
   const value = useMemo<AppStateValue>(() => {
+    async function withPending<T>(operation: () => Promise<T>) {
+      setIsPending(true);
+      try {
+        return await operation();
+      } finally {
+        setIsPending(false);
+      }
+    }
+
     return {
-      state,
+      isConfigured: configured,
       isReady,
       isPending,
       currentProfile,
-      login(input, inviteToken) {
-        const normalizedEmail = input.email.trim().toLowerCase();
-        let nextTripId: string | undefined;
+      async login(input) {
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          throw new Error("Supabase is not configured.");
+        }
 
-        updateState((previous) => {
-          const existing = previous.profiles.find((profile) => profile.email === normalizedEmail);
-          const profileId = existing?.id ?? createId("profile");
-          const profile: Profile = {
-            id: profileId,
-            email: normalizedEmail,
-            displayName: input.displayName.trim(),
-            homeCity: input.homeCity.trim(),
-            passport: input.passport.trim().toUpperCase(),
-            createdAt: existing?.createdAt ?? new Date().toISOString()
-          };
+        const email = input.email.trim().toLowerCase();
+        const password = input.password;
 
-          const profiles = existing
-            ? previous.profiles.map((item) => (item.id === existing.id ? profile : item))
-            : [...previous.profiles, profile];
+        await withPending(async () => {
+          if (input.mode === "signup") {
+            const { error } = await supabase.auth.signUp({
+              email,
+              password
+            });
 
-          let nextState: AppState = {
-            ...previous,
-            profiles,
-            currentProfileId: profileId
-          };
+            if (error) {
+              throw error;
+            }
 
-          if (inviteToken) {
-            const joinResult = joinTripByInviteTokenInternal(nextState, profileId, inviteToken);
-            nextState = joinResult.state;
-            nextTripId = joinResult.tripId;
+            return;
           }
 
-          return nextState;
-        });
+          const { error } = await supabase.auth.signInWithPassword({
+            email,
+            password
+          });
 
-        return nextTripId;
+          if (error) {
+            throw error;
+          }
+        });
       },
-      logout() {
-        updateState((previous) => ({ ...previous, currentProfileId: null }));
+      async logout() {
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          return;
+        }
+
+        await withPending(async () => {
+          await supabase.auth.signOut();
+        });
       },
-      updateCurrentProfile(input) {
+      async updateCurrentProfile(input) {
         if (!currentProfile) {
           return;
         }
 
-        updateState((previous) => ({
-          ...previous,
-          profiles: previous.profiles.map((profile) =>
-            profile.id === currentProfile.id
-              ? {
-                  ...profile,
-                  displayName: input.displayName.trim(),
-                  homeCity: input.homeCity.trim(),
-                  passport: input.passport.trim().toUpperCase(),
-                  photoUrl: input.photoUrl.trim() || undefined
-                }
-              : profile
-          )
-        }));
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          return;
+        }
+
+        await withPending(async () => {
+          await supabase
+            .from("profiles")
+            .update({
+              display_name: input.displayName.trim(),
+              home_city: input.homeCity.trim(),
+              passport: input.passport.trim().toUpperCase(),
+              photo_url: input.photoUrl.trim() || null
+            })
+            .eq("id", currentProfile.id);
+
+          await refreshForUser(currentProfile.id);
+        });
       },
       addProfileAvailabilityWindow(input) {
         if (!currentProfile) {
           return;
         }
 
-        updateState((previous) => ({
+        setLocalPlanningState((previous) => ({
           ...previous,
           profileAvailabilityWindows: [
             {
-              id: createId("profilewin"),
+              id: createUuid("profilewin"),
               profileId: currentProfile.id,
               label: input.label.trim(),
               startMonthDay: input.startMonthDay,
@@ -262,162 +619,296 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         }));
       },
       removeProfileAvailabilityWindow(windowId) {
-        updateState((previous) => ({
+        setLocalPlanningState((previous) => ({
           ...previous,
           profileAvailabilityWindows: previous.profileAvailabilityWindows.filter(
             (window) => window.id !== windowId
           )
         }));
       },
-      createTrip(input) {
+      async createTrip(input) {
         if (!currentProfile) {
           throw new Error("Must be logged in to create a trip.");
         }
 
-        const tripId = createId("trip");
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          throw new Error("Supabase is not configured.");
+        }
+
+        const tripId = createUuid("trip");
+        const memberId = createUuid("member");
         const now = new Date().toISOString();
-        updateState((previous) => ({
-          ...previous,
-          trips: [
-            {
-              id: tripId,
-              title: input.title.trim(),
-              groupName: input.groupName.trim(),
-              summary: input.summary.trim(),
-              tentativeStart: input.tentativeStart,
-              tentativeEnd: input.tentativeEnd,
-              creatorProfileId: currentProfile.id,
-              finalDateOptionIds: [],
-              status: "collecting_members",
-              createdAt: now
-            },
-            ...previous.trips
-          ],
-          tripMembers: [
-            {
-              id: createId("member"),
-              tripId,
-              profileId: currentProfile.id,
-              role: "planner",
-              joinedAt: now
-            },
-            ...previous.tripMembers
-          ]
-        }));
+        const nextTrip: Trip = {
+          id: tripId,
+          title: input.title.trim(),
+          groupName: input.groupName.trim(),
+          summary: input.summary.trim(),
+          tentativeStart: input.tentativeStart,
+          tentativeEnd: input.tentativeEnd,
+          creatorProfileId: currentProfile.id,
+          finalDateOptionIds: [],
+          status: "collecting_members",
+          createdAt: now
+        };
+        const nextMember: TripMember = {
+          id: memberId,
+          tripId,
+          profileId: currentProfile.id,
+          role: "planner",
+          joinedAt: now
+        };
+
+        await withPending(async () => {
+          const tripInsert = await supabase.from("trips").insert({
+            id: tripId,
+            creator_profile_id: currentProfile.id,
+            title: nextTrip.title,
+            group_name: nextTrip.groupName,
+            summary: nextTrip.summary,
+            tentative_start: nextTrip.tentativeStart,
+            tentative_end: nextTrip.tentativeEnd,
+            status: "collecting_members"
+          });
+          if (tripInsert.error) {
+            throw tripInsert.error;
+          }
+
+          const memberInsert = await supabase.from("trip_members").insert({
+            id: memberId,
+            trip_id: tripId,
+            profile_id: currentProfile.id,
+            role: "planner",
+            joined_at: now
+          });
+          if (memberInsert.error) {
+            throw memberInsert.error;
+          }
+
+          setPersistedState((previous) => ({
+            ...previous,
+            trips: sortTrips(
+              previous.trips.some((trip) => trip.id === tripId)
+                ? previous.trips
+                : [nextTrip, ...previous.trips]
+            ),
+            tripMembers: previous.tripMembers.some((member) => member.id === memberId)
+              ? previous.tripMembers
+              : [nextMember, ...previous.tripMembers]
+          }));
+
+          await refreshForUser(currentProfile.id);
+        });
+
         return tripId;
       },
-      updateTripStatus(tripId, status) {
-        updateState((previous) => {
-          const finalDateOptions = getFinalDateOptionsForTrip(previous, tripId);
-          const shortlistedDestinations = previous.tripDestinations.filter(
-            (entry) => entry.tripId === tripId && entry.shortlist
-          );
+      async updateTripStatus(tripId, status) {
+        if (!currentProfile) {
+          return;
+        }
 
-          return {
-            ...previous,
-            trips: previous.trips.map((trip) => {
-              if (trip.id !== tripId) {
-                return trip;
-              }
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          return;
+        }
 
-              if (status === "voting" && (shortlistedDestinations.length === 0 || finalDateOptions.length === 0)) {
-                return trip;
-              }
+        const finalDateOptions = getFinalDateOptionsForTrip(
+          persistedState.trips,
+          localPlanningState,
+          localPlanningState.availabilityRanges,
+          persistedState.tripMembers,
+          tripId
+        );
+        const shortlistedDestinations = localPlanningState.tripDestinations.filter(
+          (entry) => entry.tripId === tripId && entry.shortlist
+        );
 
-              if (status === "decided" && trip.status !== "voting") {
-                return trip;
-              }
+        if (status === "voting" && (shortlistedDestinations.length === 0 || finalDateOptions.length === 0)) {
+          return;
+        }
 
-              return {
-                ...trip,
-                status,
-                decidedAt: status === "decided" ? new Date().toISOString() : trip.decidedAt
-              };
+        const trip = persistedState.trips.find((item) => item.id === tripId);
+        if (!trip || (status === "decided" && trip.status !== "voting")) {
+          return;
+        }
+
+        await withPending(async () => {
+          await supabase
+            .from("trips")
+            .update({
+              status,
+              decided_at: status === "decided" ? new Date().toISOString() : trip.decidedAt ?? null
             })
-          };
+            .eq("id", tripId);
+
+          await refreshForUser(currentProfile.id);
         });
       },
       setFinalDateOptions(tripId, optionIds) {
-        updateState((previous) => ({
+        setLocalPlanningState((previous) => ({
           ...previous,
-          trips: previous.trips.map((trip) =>
-            trip.id === tripId ? { ...trip, finalDateOptionIds: optionIds } : trip
-          )
+          tripFinalDateOptionIds: {
+            ...previous.tripFinalDateOptionIds,
+            [tripId]: optionIds
+          }
         }));
       },
-      createInviteLink(tripId) {
-        const invite: TripInvite = {
-          id: createId("invite"),
+      async createInviteLink(tripId) {
+        if (!currentProfile) {
+          throw new Error("Must be logged in to invite people.");
+        }
+
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          throw new Error("Supabase is not configured.");
+        }
+
+        const inviteId = createUuid("invite");
+        const token = createInviteToken();
+        const createdAt = new Date().toISOString();
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+        await withPending(async () => {
+          await supabase.from("trip_invites").insert({
+            id: inviteId,
+            trip_id: tripId,
+            type: "link",
+            token,
+            created_at: createdAt,
+            expires_at: expiresAt
+          });
+
+          await refreshForUser(currentProfile.id);
+        });
+
+        return {
+          id: inviteId,
           tripId,
           type: "link",
-          token: createId("link"),
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-          createdAt: new Date().toISOString()
+          token,
+          createdAt,
+          expiresAt
         };
-        updateState((previous) => ({
-          ...previous,
-          tripInvites: [invite, ...previous.tripInvites]
-        }));
-        return invite;
       },
-      inviteByEmail(tripId, email) {
-        const invite: TripInvite = {
-          id: createId("invite"),
-          tripId,
-          type: "email",
-          email: email.trim().toLowerCase(),
-          token: createId("email"),
-          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-          createdAt: new Date().toISOString()
-        };
-        updateState((previous) => ({
-          ...previous,
-          tripInvites: [invite, ...previous.tripInvites]
-        }));
+      async inviteByEmail(tripId, email) {
+        if (!currentProfile) {
+          return;
+        }
+
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          return;
+        }
+
+        await withPending(async () => {
+          await supabase.from("trip_invites").insert({
+            id: createUuid("invite"),
+            trip_id: tripId,
+            type: "email",
+            token: createInviteToken(),
+            email: email.trim().toLowerCase(),
+            created_at: new Date().toISOString(),
+            expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+          });
+
+          await refreshForUser(currentProfile.id);
+        });
       },
-      revokeInvite(inviteId) {
-        updateState((previous) => ({
-          ...previous,
-          tripInvites: previous.tripInvites.map((invite) =>
-            invite.id === inviteId && getInviteStatus(invite) === "pending"
-              ? { ...invite, revokedAt: new Date().toISOString() }
-              : invite
-          )
-        }));
+      async revokeInvite(inviteId) {
+        if (!currentProfile) {
+          return;
+        }
+
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          return;
+        }
+
+        await withPending(async () => {
+          await supabase
+            .from("trip_invites")
+            .update({ revoked_at: new Date().toISOString() })
+            .eq("id", inviteId);
+
+          await refreshForUser(currentProfile.id);
+        });
       },
-      joinTripByInviteToken(token) {
+      async joinTripByInviteToken(token) {
         if (!currentProfile) {
           return undefined;
         }
 
-        let joinedTripId: string | undefined;
-        updateState((previous) => {
-          const result = joinTripByInviteTokenInternal(previous, currentProfile.id, token);
-          joinedTripId = result.tripId;
-          return result.state;
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          return undefined;
+        }
+
+        return withPending(async () => {
+          const inviteResult = await supabase
+            .from("trip_invites")
+            .select(
+              "id, trip_id, type, token, email, created_at, expires_at, accepted_at, revoked_at"
+            )
+            .eq("token", token)
+            .maybeSingle();
+
+          if (!inviteResult.data) {
+            return undefined;
+          }
+
+          const invite = mapTripInvite(inviteResult.data);
+          if (getInviteStatus(invite) !== "pending") {
+            return undefined;
+          }
+
+          const membershipResult = await supabase
+            .from("trip_members")
+            .select("id")
+            .eq("trip_id", invite.tripId)
+            .eq("profile_id", currentProfile.id)
+            .maybeSingle();
+
+          if (!membershipResult.data) {
+            await supabase.from("trip_members").insert({
+              id: createUuid("member"),
+              trip_id: invite.tripId,
+              profile_id: currentProfile.id,
+              role: "member"
+            });
+          }
+
+          if (invite.type === "email" && !invite.acceptedAt) {
+            await supabase
+              .from("trip_invites")
+              .update({ accepted_at: new Date().toISOString() })
+              .eq("id", invite.id);
+          }
+
+          await refreshForUser(currentProfile.id);
+          return invite.tripId;
         });
-        return joinedTripId;
       },
       addAvailability(tripId, startDate, endDate) {
         if (!currentProfile) {
           return;
         }
 
-        const range: AvailabilityRange = {
-          id: createId("range"),
-          tripId,
-          profileId: currentProfile.id,
-          startDate,
-          endDate
-        };
-
-        updateState((previous) => ({
+        setLocalPlanningState((previous) => ({
           ...previous,
-          availabilityRanges: [range, ...previous.availabilityRanges]
+          availabilityRanges: [
+            {
+              id: createUuid("range"),
+              tripId,
+              profileId: currentProfile.id,
+              startDate,
+              endDate
+            },
+            ...previous.availabilityRanges
+          ]
         }));
       },
       removeAvailability(rangeId) {
-        updateState((previous) => ({
+        setLocalPlanningState((previous) => ({
           ...previous,
           availabilityRanges: previous.availabilityRanges.filter((range) => range.id !== rangeId)
         }));
@@ -427,7 +918,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        updateState((previous) => {
+        setLocalPlanningState((previous) => {
           const exists = previous.tripDestinations.some(
             (entry) => entry.tripId === tripId && entry.destinationId === destination.id
           );
@@ -439,7 +930,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
             ...previous,
             tripDestinations: [
               {
-                id: createId("tripdest"),
+                id: createUuid("tripdest"),
                 tripId,
                 destinationId: destination.id,
                 destinationSnapshot: destination,
@@ -454,7 +945,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         });
       },
       toggleDestinationShortlist(tripDestinationId) {
-        updateState((previous) => ({
+        setLocalPlanningState((previous) => ({
           ...previous,
           tripDestinations: previous.tripDestinations.map((entry) =>
             entry.id === tripDestinationId ? { ...entry, shortlist: !entry.shortlist } : entry
@@ -466,19 +957,17 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        const vote: Vote = {
-          id: createId("vote"),
-          tripId,
-          profileId: currentProfile.id,
-          type,
-          optionId,
-          createdAt: new Date().toISOString()
-        };
-
-        updateState((previous) => ({
+        setLocalPlanningState((previous) => ({
           ...previous,
           votes: [
-            vote,
+            {
+              id: createUuid("vote"),
+              tripId,
+              profileId: currentProfile.id,
+              type,
+              optionId,
+              createdAt: new Date().toISOString()
+            },
             ...previous.votes.filter(
               (item) =>
                 !(
@@ -491,27 +980,34 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
         }));
       },
       getTripById(tripId) {
-        return state.trips.find((trip) => trip.id === tripId);
+        const trip = persistedState.trips.find((item) => item.id === tripId);
+        return trip ? applyTripLocalState(trip, localPlanningState) : undefined;
       },
       getTripMembers(tripId) {
-        return state.tripMembers
+        return persistedState.tripMembers
           .filter((member) => member.tripId === tripId)
           .map((member) => ({
             ...member,
-            profile: state.profiles.find((profile) => profile.id === member.profileId)
+            profile: persistedState.profiles.find((profile) => profile.id === member.profileId)
           }));
       },
       getTripInvites(tripId) {
-        return state.tripInvites.filter((invite) => invite.tripId === tripId);
+        return persistedState.tripInvites.filter((invite) => invite.tripId === tripId);
       },
       getInviteStatus(invite) {
         return getInviteStatus(invite);
       },
       getFinalDateOptions(tripId) {
-        return getFinalDateOptionsForTrip(state, tripId);
+        return getFinalDateOptionsForTrip(
+          persistedState.trips,
+          localPlanningState,
+          localPlanningState.availabilityRanges,
+          persistedState.tripMembers,
+          tripId
+        );
       },
       getTripDestinations(tripId) {
-        return state.tripDestinations
+        return localPlanningState.tripDestinations
           .filter((entry) => entry.tripId === tripId)
           .map((entry) => ({
             ...entry,
@@ -521,7 +1017,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
           }));
       },
       getTripAvailability(tripId) {
-        return state.availabilityRanges.filter((range) => range.tripId === tripId);
+        return localPlanningState.availabilityRanges.filter((range) => range.tripId === tripId);
       },
       getProfileAvailabilityWindows(profileId) {
         const targetProfileId = profileId ?? currentProfile?.id;
@@ -529,35 +1025,39 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
           return [];
         }
 
-        return (state.profileAvailabilityWindows ?? []).filter(
+        return localPlanningState.profileAvailabilityWindows.filter(
           (window) => window.profileId === targetProfileId
         );
       },
       getSuggestedProfileAvailability(tripId, profileId) {
-        const trip = state.trips.find((item) => item.id === tripId);
+        const trip = persistedState.trips.find((item) => item.id === tripId);
         const targetProfileId = profileId ?? currentProfile?.id;
         if (!trip || !targetProfileId) {
           return [];
         }
 
-        return (state.profileAvailabilityWindows ?? [])
+        return localPlanningState.profileAvailabilityWindows
           .filter((window) => window.profileId === targetProfileId)
           .map((window) => mapWindowToTripDates(window, trip.tentativeStart, trip.tentativeEnd))
           .filter(
             (
               suggestion
-            ): suggestion is { label: string; startDate: string; endDate: string; sourceWindowId: string } =>
-              suggestion !== null
+            ): suggestion is {
+              label: string;
+              startDate: string;
+              endDate: string;
+              sourceWindowId: string;
+            } => suggestion !== null
           );
       },
       getDateWindowOptions(tripId) {
-        const trip = state.trips.find((item) => item.id === tripId);
+        const trip = persistedState.trips.find((item) => item.id === tripId);
         if (!trip) {
           return [];
         }
 
-        const members = state.tripMembers.filter((item) => item.tripId === tripId);
-        const ranges = state.availabilityRanges.filter((item) => item.tripId === tripId);
+        const members = persistedState.tripMembers.filter((item) => item.tripId === tripId);
+        const ranges = localPlanningState.availabilityRanges.filter((item) => item.tripId === tripId);
         return computeDateWindowOptions(trip.tentativeStart, trip.tentativeEnd, members, ranges);
       },
       getVoteForCurrentUser(tripId, type) {
@@ -565,104 +1065,111 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
           return undefined;
         }
 
-        return state.votes.find(
+        return localPlanningState.votes.find(
           (vote) =>
             vote.tripId === tripId && vote.profileId === currentProfile.id && vote.type === type
         );
       },
       getVotesForTrip(tripId, type) {
-        return state.votes.filter((vote) => vote.tripId === tripId && vote.type === type);
+        return localPlanningState.votes.filter(
+          (vote) => vote.tripId === tripId && vote.type === type
+        );
       },
       getVisibleTrips() {
         if (!currentProfile) {
           return { created: [], joined: [] };
         }
 
+        const trips = persistedState.trips.map((trip) => applyTripLocalState(trip, localPlanningState));
         const created = sortTrips(
-          state.trips.filter((trip) => trip.creatorProfileId === currentProfile.id)
+          trips.filter((trip) => trip.creatorProfileId === currentProfile.id)
         );
         const joinedTripIds = new Set(
-          state.tripMembers
+          persistedState.tripMembers
             .filter((member) => member.profileId === currentProfile.id)
             .map((member) => member.tripId)
         );
         const joined = sortTrips(
-          state.trips.filter(
+          trips.filter(
             (trip) => joinedTripIds.has(trip.id) && trip.creatorProfileId !== currentProfile.id
           )
         );
         return { created, joined };
       },
-      getInvitePreview(token) {
-        const invite = state.tripInvites.find((item) => item.token === token);
-        const trip = invite ? state.trips.find((item) => item.id === invite.tripId) : undefined;
-        const planner = trip
-          ? state.profiles.find((profile) => profile.id === trip.creatorProfileId)
-          : undefined;
-        const memberCount = trip
-          ? state.tripMembers.filter((member) => member.tripId === trip.id).length
-          : 0;
-        return { invite, trip, planner, memberCount };
+      async getInvitePreview(token) {
+        const supabase = getSupabaseBrowserClient();
+        if (!supabase) {
+          return { invite: undefined, trip: undefined, planner: undefined, memberCount: 0 };
+        }
+
+        const inviteResult = await supabase
+          .from("trip_invites")
+          .select(
+            "id, trip_id, type, token, email, created_at, expires_at, accepted_at, revoked_at"
+          )
+          .eq("token", token)
+          .maybeSingle();
+
+        if (!inviteResult.data) {
+          return { invite: undefined, trip: undefined, planner: undefined, memberCount: 0 };
+        }
+
+        const invite = mapTripInvite(inviteResult.data);
+        const [tripResult, memberCountResult] = await Promise.all([
+          supabase
+            .from("trips")
+            .select(
+              "id, creator_profile_id, title, group_name, summary, tentative_start, tentative_end, status, created_at, decided_at"
+            )
+            .eq("id", invite.tripId)
+            .maybeSingle(),
+          supabase
+            .from("trip_members")
+            .select("id", { count: "exact", head: true })
+            .eq("trip_id", invite.tripId)
+        ]);
+
+        const trip = tripResult.data ? mapTrip(tripResult.data) : undefined;
+        if (!trip) {
+          return { invite, trip: undefined, planner: undefined, memberCount: 0 };
+        }
+
+        const plannerResult = await supabase
+          .from("profiles")
+          .select("id, email, display_name, home_city, passport, photo_url, created_at")
+          .eq("id", trip.creatorProfileId)
+          .maybeSingle();
+
+        return {
+          invite,
+          trip,
+          planner: plannerResult.data ? mapProfile(plannerResult.data) : undefined,
+          memberCount: memberCountResult.count ?? 0
+        };
       }
     };
-  }, [currentProfile, isPending, isReady, state]);
+  }, [configured, currentProfile, isPending, isReady, localPlanningState, persistedState]);
 
   return <AppStateContext.Provider value={value}>{children}</AppStateContext.Provider>;
 }
 
-function joinTripByInviteTokenInternal(
-  previous: AppState,
-  profileId: string,
-  token: string
-): { state: AppState; tripId?: string } {
-  const invite = previous.tripInvites.find((item) => item.token === token);
-  if (!invite || getInviteStatus(invite) !== "pending") {
-    return { state: previous };
-  }
-
-  const alreadyJoined = previous.tripMembers.some(
-    (member) => member.tripId === invite.tripId && member.profileId === profileId
-  );
-
-  const tripMembers = alreadyJoined
-      ? previous.tripMembers
-    : [
-        {
-          id: createId("member"),
-          tripId: invite.tripId,
-          profileId,
-          role: "member" as const,
-          joinedAt: new Date().toISOString()
-        },
-        ...previous.tripMembers
-      ];
-
-  const tripInvites = previous.tripInvites.map((item) =>
-    item.id === invite.id && item.type === "email"
-      ? { ...item, acceptedAt: item.acceptedAt ?? new Date().toISOString() }
-      : item
-  );
-
-  return {
-    state: {
-      ...previous,
-      tripMembers,
-      tripInvites
-    },
-    tripId: invite.tripId
-  };
-}
-
-function getFinalDateOptionsForTrip(state: AppState, tripId: string) {
-  const trip = state.trips.find((item) => item.id === tripId);
+function getFinalDateOptionsForTrip(
+  trips: Trip[],
+  localPlanningState: LocalPlanningState,
+  availabilityRanges: AvailabilityRange[],
+  tripMembers: TripMember[],
+  tripId: string
+) {
+  const trip = trips.find((item) => item.id === tripId);
   if (!trip) {
     return [];
   }
 
-  const members = state.tripMembers.filter((item) => item.tripId === tripId);
-  const ranges = state.availabilityRanges.filter((item) => item.tripId === tripId);
+  const members = tripMembers.filter((item) => item.tripId === tripId);
+  const ranges = availabilityRanges.filter((item) => item.tripId === tripId);
   const options = computeDateWindowOptions(trip.tentativeStart, trip.tentativeEnd, members, ranges);
-  return options.filter((option) => trip.finalDateOptionIds.includes(option.id));
+  const finalIds = localPlanningState.tripFinalDateOptionIds[tripId] ?? trip.finalDateOptionIds;
+  return options.filter((option) => finalIds.includes(option.id));
 }
 
 export function useAppState() {
@@ -683,12 +1190,11 @@ function mapWindowToTripDates(
   const candidates = [
     `${startYear}-${window.startMonthDay}`,
     `${endYear}-${window.startMonthDay}`
-  ].flatMap((candidateStart) => {
+  ].map((candidateStart) => {
     const candidateYear = candidateStart.slice(0, 4);
-    const endMonthDay = window.endMonthDay;
     const crossesYear = window.endMonthDay < window.startMonthDay;
-    const candidateEnd = `${String(Number(candidateYear) + (crossesYear ? 1 : 0))}-${endMonthDay}`;
-    return [{ candidateStart, candidateEnd }];
+    const candidateEnd = `${String(Number(candidateYear) + (crossesYear ? 1 : 0))}-${window.endMonthDay}`;
+    return { candidateStart, candidateEnd };
   });
 
   for (const candidate of candidates) {

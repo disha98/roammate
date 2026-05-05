@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { normalizeDestination, type OpenMeteoSearchResult } from "@/lib/destination-search";
 
-const cache = new Map<string, { expiresAt: number; payload: ReturnType<typeof normalizeDestination>[] }>();
+const cache = new Map<
+  string,
+  { expiresAt: number; payload: Awaited<ReturnType<typeof normalizeDestination>>[] }
+>();
 const TTL = 1000 * 60 * 60 * 24;
 
 export async function GET(request: Request) {
@@ -33,7 +36,7 @@ export async function GET(request: Request) {
   }
 
   const payload = (await response.json()) as { results?: OpenMeteoSearchResult[] };
-  const results = (payload.results ?? [])
+  const candidates = (payload.results ?? [])
     .filter(
       (item) =>
         item.country_code &&
@@ -41,8 +44,9 @@ export async function GET(request: Request) {
         Number.isFinite(item.longitude)
     )
     .sort((left, right) => (right.population ?? 0) - (left.population ?? 0))
-    .slice(0, 12)
-    .map((item) => normalizeDestination(item));
+    .slice(0, 12);
+
+  const results = await Promise.all(candidates.map((item) => normalizeDestination(item)));
 
   cache.set(cacheKey, { expiresAt: Date.now() + TTL, payload: results });
 
