@@ -1,7 +1,6 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button, Input, Panel } from "@/components/ui";
 import { useAppState } from "@/context/app-state";
@@ -76,9 +75,6 @@ export default function LoginPage() {
               <li>Finish your profile inside the app after sign-in.</li>
             </ul>
           </div>
-          <Link href="/" className="mt-6 inline-block text-sm font-semibold text-lagoon">
-            Back to overview
-          </Link>
         </Panel>
         <Panel className="p-8">
           <form className="space-y-4" onSubmit={handleSubmit}>
