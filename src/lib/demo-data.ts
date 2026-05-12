@@ -212,5 +212,6 @@ export const initialAppState: AppState = {
     }
   ],
   tripDestinations,
+  destinationEnrichments: [],
   votes
 };

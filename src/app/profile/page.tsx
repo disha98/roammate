@@ -35,10 +35,12 @@ export default function ProfilePage() {
       return;
     }
 
-    setDisplayName(currentProfile.displayName);
-    setHomeCity(currentProfile.homeCity);
-    setPassport(currentProfile.passport);
-    setPhotoUrl(currentProfile.photoUrl ?? "");
+    queueMicrotask(() => {
+      setDisplayName(currentProfile.displayName);
+      setHomeCity(currentProfile.homeCity);
+      setPassport(currentProfile.passport);
+      setPhotoUrl(currentProfile.photoUrl ?? "");
+    });
   }, [currentProfile]);
 
   useEffect(() => {

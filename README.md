@@ -32,25 +32,25 @@ The app already has the main product flow working in the UI:
 
 ## Product progress
 
-This project is now in a hybrid v2 checkpoint.
+This project is now at a v3 checkpoint.
 
 - The user experience is in place.
-- The core trip/account layer is persisted in Supabase.
+- The core trip/account layer and all planning data are persisted in Supabase.
 - The trip planning flow is clear.
-- The profile and planning data model are set up.
 - Visa data is real and backed by a stored dataset snapshot.
 - Weather summaries are based on the planned trip month rather than today’s current conditions.
 - Destination search is live and not limited to a hardcoded list.
 - The entire app requires login.
-- Availability, destinations, shortlist state, votes, and final date options are still local-only for now.
+- Destination intelligence (summaries, vibe tags, top activities) is powered by Groq LLM with structured JSON output.
+- Generic heuristic content is no longer shown; the UI shows "unavailable" when LLM data is missing.
 
 ## Current plan
 
-The next real product step is to move the remaining planning state into Supabase so that:
+The next product steps are:
 
-- profile availability and trip availability are shared across users,
-- destination shortlist state syncs across users,
-- votes and final decisions are backed by the database.
+- explicit final trip outcome persistence in the `decided` phase,
+- email delivery for invites,
+- destination recommendations based on group preferences.
 
 ## Environment
 
@@ -59,6 +59,11 @@ Local development expects:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
 - `UNSPLASH_ACCESS_KEY`
+- `GROQ_API_KEY` (for LLM-powered destination intelligence; free at https://console.groq.com/keys)
+
+Optional:
+
+- `GROQ_MODEL` — override the default model (defaults to `openai/gpt-oss-20b`)
 
 Auth currently uses Supabase email/password sign-in and account creation from `/login`.
 
@@ -69,7 +74,7 @@ Auth currently uses Supabase email/password sign-in and account creation from `/
 - `Profile & settings` - your personal planning profile.
 - `Invite preview` - lets someone join a trip from a shareable link.
 
-For a focused summary of what changed in this v2 checkpoint, see [README-v2.md](/Users/dishajanardhan/DesignBuildShip/MyTravelPlanner/README-v2.md).
+For a focused summary of what changed in each checkpoint, see [README-v2.md](README-v2.md) and [README-v3.md](README-v3.md).
 
 ## Local development
 

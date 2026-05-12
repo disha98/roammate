@@ -1,4 +1,5 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createBrowserClient } from "@supabase/ssr";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 let browserClient: SupabaseClient | null | undefined;
 
@@ -17,13 +18,7 @@ export function getSupabaseBrowserClient() {
     return browserClient;
   }
 
-  browserClient = createClient(url, publishableKey, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true
-    }
-  });
+  browserClient = createBrowserClient(url, publishableKey);
 
   return browserClient;
 }

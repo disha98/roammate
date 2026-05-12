@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button, Input, Panel } from "@/components/ui";
 import { useAppState } from "@/context/app-state";
@@ -18,20 +18,23 @@ export default function LoginPage() {
     "idle" | "submitting" | "signed_up" | "error"
   >("idle");
   const [errorMessage, setErrorMessage] = useState("");
-  const [hasCompletedRedirect, setHasCompletedRedirect] = useState(false);
+  const hasCompletedRedirectRef = useRef(false);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    setNextPath(params.get("next") ?? "/dashboard");
-    setInviteToken(params.get("inviteToken") ?? undefined);
+
+    queueMicrotask(() => {
+      setNextPath(params.get("next") ?? "/dashboard");
+      setInviteToken(params.get("inviteToken") ?? undefined);
+    });
   }, []);
 
   useEffect(() => {
-    if (!isReady || !currentProfile || hasCompletedRedirect) {
+    if (!isReady || !currentProfile || hasCompletedRedirectRef.current) {
       return;
     }
 
-    setHasCompletedRedirect(true);
+    hasCompletedRedirectRef.current = true;
     void (async () => {
       if (inviteToken) {
         const joinedTripId = await joinTripByInviteToken(inviteToken);
@@ -41,7 +44,7 @@ export default function LoginPage() {
 
       router.replace(nextPath);
     })();
-  }, [currentProfile, hasCompletedRedirect, inviteToken, isReady, joinTripByInviteToken, nextPath, router]);
+  }, [currentProfile, inviteToken, isReady, joinTripByInviteToken, nextPath, router]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

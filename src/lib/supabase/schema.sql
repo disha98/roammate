@@ -164,6 +164,21 @@ create table if not exists trip_destinations (
   unique (trip_id, destination_id)
 );
 
+create table if not exists destination_enrichments (
+  destination_id text primary key references destinations(id) on delete cascade,
+  short_summary text not null,
+  long_summary text not null,
+  vibe_tags text[] not null default '{}',
+  top_activities jsonb not null default '[]'::jsonb,
+  budget_tier text not null check (budget_tier in ('value', 'balanced', 'premium')),
+  local_costs jsonb not null default '{}'::jsonb,
+  source text not null default 'heuristic',
+  coverage text not null default 'partial' check (coverage in ('partial', 'complete')),
+  fetched_at timestamptz not null default now(),
+  stale_at timestamptz not null default (now() + interval '30 days'),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists votes (
   id uuid primary key,
   trip_id uuid not null references trips(id) on delete cascade,
@@ -259,6 +274,7 @@ for update using (public.is_trip_planner(trip_id) or auth.uid() is not null);
 alter table availability_ranges enable row level security;
 alter table destinations enable row level security;
 alter table trip_destinations enable row level security;
+alter table destination_enrichments enable row level security;
 alter table votes enable row level security;
 alter table profile_availability_windows enable row level security;
 
@@ -317,6 +333,20 @@ for insert with check (public.is_trip_member(trip_id));
 drop policy if exists "td_update_planner" on trip_destinations;
 create policy "td_update_planner" on trip_destinations
 for update using (public.is_trip_planner(trip_id));
+
+-- destination_enrichments: authenticated users can read and refresh cached shared data
+
+drop policy if exists "de_select_authenticated" on destination_enrichments;
+create policy "de_select_authenticated" on destination_enrichments
+for select using (auth.uid() is not null);
+
+drop policy if exists "de_insert_authenticated" on destination_enrichments;
+create policy "de_insert_authenticated" on destination_enrichments
+for insert with check (auth.uid() is not null);
+
+drop policy if exists "de_update_authenticated" on destination_enrichments;
+create policy "de_update_authenticated" on destination_enrichments
+for update using (auth.uid() is not null);
 
 -- votes: trip members can read; members insert/update their own
 

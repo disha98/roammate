@@ -16,6 +16,7 @@ import type {
   AvailabilityRange,
   DateWindowOption,
   DestinationCatalogItem,
+  DestinationEnrichment,
   InviteStatus,
   Profile,
   ProfileAvailabilityWindow,
@@ -38,6 +39,7 @@ interface PersistedState {
   profileAvailabilityWindows: ProfileAvailabilityWindow[];
   availabilityRanges: AvailabilityRange[];
   tripDestinations: TripDestination[];
+  destinationEnrichments: DestinationEnrichment[];
   votes: Vote[];
 }
 
@@ -50,6 +52,7 @@ const emptyPersistedState: PersistedState = {
   profileAvailabilityWindows: [],
   availabilityRanges: [],
   tripDestinations: [],
+  destinationEnrichments: [],
   votes: []
 };
 
@@ -151,6 +154,7 @@ interface AppStateValue {
   getFinalDateOptions: (tripId: string) => DateWindowOption[];
   getTripDestinations: (tripId: string) => (TripDestination & {
     destination: DestinationCatalogItem | undefined;
+    enrichment: DestinationEnrichment | undefined;
   })[];
   getTripAvailability: (tripId: string) => AvailabilityRange[];
   getProfileAvailabilityWindows: (profileId?: string) => ProfileAvailabilityWindow[];
@@ -287,17 +291,65 @@ function mapTripDestination(
     shortlist: boolean;
     created_at: string;
   },
-  snapshot?: DestinationCatalogItem
+  snapshot?: DestinationCatalogItem,
+  enrichment?: DestinationEnrichment
 ): TripDestination {
   return {
     id: row.id,
     tripId: row.trip_id,
     destinationId: row.destination_id,
     destinationSnapshot: snapshot,
+    destinationEnrichment: enrichment,
     addedByProfileId: row.added_by_profile_id,
     note: row.note,
     shortlist: row.shortlist,
     createdAt: row.created_at
+  };
+}
+
+function mapDestinationEnrichment(row: {
+  destination_id: string;
+  short_summary: string;
+  long_summary: string;
+  vibe_tags: string[];
+  top_activities: {
+    title: string;
+    description?: string;
+    category?: "food" | "culture" | "outdoors" | "nightlife" | "wellness" | "shopping" | "scenic";
+  }[];
+  budget_tier: "value" | "balanced" | "premium";
+  local_costs: {
+    currency?: "USD";
+    lodgingMidUsd?: number;
+    foodMidUsd?: number;
+    localTransportMidUsd?: number;
+    activitiesMidUsd?: number;
+    dailyTotalUsd?: number;
+  };
+  source: "heuristic" | "wikimedia" | "mixed_free_apis" | "llm_synthesized";
+  coverage: "partial" | "complete";
+  fetched_at: string;
+  stale_at: string;
+}): DestinationEnrichment {
+  return {
+    destinationId: row.destination_id,
+    shortSummary: row.short_summary,
+    longSummary: row.long_summary,
+    vibeTags: row.vibe_tags ?? [],
+    topActivities: row.top_activities ?? [],
+    budgetTier: row.budget_tier,
+    localCosts: {
+      currency: row.local_costs?.currency ?? "USD",
+      lodgingMidUsd: row.local_costs?.lodgingMidUsd ?? 0,
+      foodMidUsd: row.local_costs?.foodMidUsd ?? 0,
+      localTransportMidUsd: row.local_costs?.localTransportMidUsd ?? 0,
+      activitiesMidUsd: row.local_costs?.activitiesMidUsd ?? 0,
+      dailyTotalUsd: row.local_costs?.dailyTotalUsd ?? 0
+    },
+    source: row.source,
+    coverage: row.coverage,
+    fetchedAt: row.fetched_at,
+    staleAt: row.stale_at
   };
 }
 
@@ -452,13 +504,22 @@ async function loadPersistedStateForUser(userId: string): Promise<PersistedState
   // Fetch destination snapshots for trip_destinations
   const tripDestRows = (tripDestsResult.data ?? []) as never[];
   let tripDestinations: TripDestination[] = [];
+  let destinationEnrichments: DestinationEnrichment[] = [];
 
   if (tripDestRows.length > 0) {
     const destinationIds = [...new Set(tripDestRows.map((r: { destination_id: string }) => r.destination_id))];
-    const destResult = await supabase
-      .from("destinations")
-      .select("id, city, country, country_code, lat, lon, image, tags, best_for, summary")
-      .in("id", destinationIds);
+    const [destResult, enrichmentResult] = await Promise.all([
+      supabase
+        .from("destinations")
+        .select("id, city, country, country_code, lat, lon, image, tags, best_for, summary")
+        .in("id", destinationIds),
+      supabase
+        .from("destination_enrichments")
+        .select(
+          "destination_id, short_summary, long_summary, vibe_tags, top_activities, budget_tier, local_costs, source, coverage, fetched_at, stale_at"
+        )
+        .in("destination_id", destinationIds)
+    ]);
 
     const destMap = new Map<string, DestinationCatalogItem>();
     for (const row of (destResult.data ?? []) as never[]) {
@@ -466,10 +527,16 @@ async function loadPersistedStateForUser(userId: string): Promise<PersistedState
       destMap.set(mapped.id, mapped);
     }
 
+    const enrichmentMap = new Map<string, DestinationEnrichment>();
+    destinationEnrichments = ((enrichmentResult.data ?? []) as never[]).map(mapDestinationEnrichment);
+    for (const enrichment of destinationEnrichments) {
+      enrichmentMap.set(enrichment.destinationId, enrichment);
+    }
+
     tripDestinations = tripDestRows.map((row: never) => {
       const r = row as { destination_id: string };
       const snapshot = destMap.get(r.destination_id) ?? destinationCatalog.find((d) => d.id === r.destination_id);
-      return mapTripDestination(row, snapshot);
+      return mapTripDestination(row, snapshot, enrichmentMap.get(r.destination_id));
     });
   }
 
@@ -506,6 +573,7 @@ async function loadPersistedStateForUser(userId: string): Promise<PersistedState
     profileAvailabilityWindows,
     availabilityRanges,
     tripDestinations,
+    destinationEnrichments,
     votes: votesData
   };
 }
@@ -552,10 +620,10 @@ async function ensureProfile(user: User) {
 
 export function AppStateProvider({ children }: { children: React.ReactNode }) {
   const [persistedState, setPersistedState] = useState<PersistedState>(emptyPersistedState);
-  const [isReady, setIsReady] = useState(false);
+  const configured = isSupabaseConfigured();
+  const [isReady, setIsReady] = useState(!configured);
   const [isPending, setIsPending] = useState(false);
   const loadIdRef = useRef(0);
-  const configured = isSupabaseConfigured();
 
   async function refreshForUser(userId: string) {
     const nextState = await loadPersistedStateForUser(userId);
@@ -565,7 +633,6 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const client = getSupabaseBrowserClient();
     if (!client) {
-      setIsReady(true);
       return;
     }
     const supabase = client;
@@ -1293,7 +1360,8 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
             ...entry,
             destination:
               entry.destinationSnapshot ??
-              destinationCatalog.find((item) => item.id === entry.destinationId)
+              destinationCatalog.find((item) => item.id === entry.destinationId),
+            enrichment: entry.destinationEnrichment
           }));
       },
       getTripAvailability(tripId) {

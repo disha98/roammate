@@ -88,11 +88,41 @@ export interface DestinationCatalogItem {
   imageSource?: "catalog" | "provider" | "placeholder";
 }
 
+export interface DestinationActivity {
+  title: string;
+  description?: string;
+  category?: "food" | "culture" | "outdoors" | "nightlife" | "wellness" | "shopping" | "scenic";
+}
+
+export interface DestinationLocalCosts {
+  currency: "USD";
+  lodgingMidUsd: number;
+  foodMidUsd: number;
+  localTransportMidUsd: number;
+  activitiesMidUsd: number;
+  dailyTotalUsd: number;
+}
+
+export interface DestinationEnrichment {
+  destinationId: string;
+  shortSummary: string;
+  longSummary: string;
+  vibeTags: string[];
+  topActivities: DestinationActivity[];
+  budgetTier: "value" | "balanced" | "premium";
+  localCosts: DestinationLocalCosts;
+  source: "heuristic" | "wikimedia" | "mixed_free_apis" | "llm_synthesized";
+  coverage: "partial" | "complete";
+  fetchedAt: string;
+  staleAt: string;
+}
+
 export interface TripDestination {
   id: string;
   tripId: string;
   destinationId: string;
   destinationSnapshot?: DestinationCatalogItem;
+  destinationEnrichment?: DestinationEnrichment;
   addedByProfileId: string;
   note: string;
   shortlist: boolean;
@@ -117,6 +147,7 @@ export interface AppState {
   profileAvailabilityWindows: ProfileAvailabilityWindow[];
   availabilityRanges: AvailabilityRange[];
   tripDestinations: TripDestination[];
+  destinationEnrichments: DestinationEnrichment[];
   votes: Vote[];
 }
 

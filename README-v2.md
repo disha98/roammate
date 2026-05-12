@@ -117,6 +117,7 @@ V2 expects:
 - `UNSPLASH_ACCESS_KEY`
 
 Optional:
+
 - `NEXT_PUBLIC_APP_URL` — base URL for generated invite links (falls back to `VERCEL_URL` or `localhost:3000`)
 
 ## Supabase Setup Required

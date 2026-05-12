@@ -206,3 +206,14 @@
 - Destinations are manual-first in v1; recommendations are secondary.
 - Rough cost estimates and live flight pricing are deferred beyond this 4-phase MVP unless time remains.
 - Full standalone group management, contact books, notifications, and accommodation pricing are out of scope for this v1 roadmap.
+
+## Guardrails
+
+- Never read, write, or include in tool output:
+  - `.env`, `.env.local`, `.env.*`, `.env.*.local`,
+  - any file containing API keys, tokens, or connection strings,
+  - `package-lock.json` directly; update it only through npm commands.
+- Require explicit user confirmation before:
+  - any `git push` or PR creation,
+  - schema changes in `schema.sql` or migrations,
+  - changes to `middleware.ts` or auth configuration.
