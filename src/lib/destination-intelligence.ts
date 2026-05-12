@@ -501,12 +501,16 @@ async function synthesizeWithGroq(input: {
   }
 
   const systemPrompt =
-    "Extract destination intelligence as JSON. Be concise. shortSummary: 1 sentence. longSummary: 2 sentences. vibeTags: 3-5 tags (2-3 words each). topActivities: 3 items, short title + 1-sentence description. City-specific facts only.";
+    "Extract destination intelligence as JSON. Be concise. shortSummary: 1 sentence. longSummary: 2 sentences. vibeTags: 3-5 tags (2-3 words each). topActivities: 3 items, short title + 1-sentence description. Use provided source material when available, otherwise use your knowledge of the destination.";
 
   // Build a compact prompt with only what the LLM needs
   const guide = input.wikivoyageGuide?.guideText.slice(0, 1500) ?? "";
   const wiki = input.wikipediaSummary?.shortSummary ?? "";
-  const userPrompt = `City: ${input.destination.city}, ${input.destination.country}\n${wiki ? `Wiki: ${wiki}\n` : ""}${guide ? `Guide: ${guide}` : ""}`;
+  const parts = [`Destination: ${input.destination.city}, ${input.destination.country}`];
+  if (wiki) parts.push(`Wikipedia: ${wiki}`);
+  if (guide) parts.push(`Travel guide: ${guide}`);
+  if (!wiki && !guide) parts.push("No source material available. Use your knowledge of this destination.");
+  const userPrompt = parts.join("\n");
 
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",

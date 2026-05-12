@@ -1356,6 +1356,7 @@ export function AppStateProvider({ children }: { children: React.ReactNode }) {
       getTripDestinations(tripId) {
         return persistedState.tripDestinations
           .filter((entry) => entry.tripId === tripId)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
           .map((entry) => ({
             ...entry,
             destination:
