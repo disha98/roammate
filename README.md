@@ -37,7 +37,7 @@ The app has the full planning flow working end-to-end:
 
 ## Product progress
 
-This project is now at its final desktop release state on the current branch.
+This project is now at its v4 final desktop release state on the current branch.
 
 - The full user experience is in place from trip creation through group decision.
 - All planning data is persisted in Supabase (nothing remains in localStorage).
@@ -52,6 +52,8 @@ This project is now at its final desktop release state on the current branch.
 - Cost estimates are derived from World Bank income-level data with city-level adjustments.
 - Per-member travel cost estimates are computed from home city distance.
 - Final destination and date winners are persisted explicitly when the planner locks the outcome.
+- The app branding now uses the new shared people-in-pin mark across the shell, auth surfaces, and browser icon path.
+- Shared loading states and dashboard transitions have been polished so auth/session loading is centered while dashboard data loading stays in normal page flow.
 
 ## What’s next
 
@@ -87,7 +89,7 @@ Auth uses Supabase email/password sign-in and account creation from `/login`.
 - `Profile & settings` - your personal planning profile.
 - `Invite preview` - lets someone join a trip from a shareable link.
 
-For a focused summary of what changed in each checkpoint, see [README-v2.md](README-v2.md) and [README-v3.md](README-v3.md).
+For a focused summary of what changed in each checkpoint, see [README-v2.md](README-v2.md), [README-v3.md](README-v3.md), and [README-v4.md](README-v4.md).
 
 ## Local development
 
