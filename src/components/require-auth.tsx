@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAppState } from "@/context/app-state";
+import { Logo } from "@/components/logo";
 
 export function RequireAuth({ children }: { children: React.ReactNode }) {
   const { currentProfile, isReady } = useAppState();
@@ -19,9 +20,16 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
 
   if (!isReady || !currentProfile) {
     return (
-      <div className="panel rounded-[2rem] p-10 text-center shadow-panel">
-        <p className="text-sm uppercase tracking-[0.3em] text-lagoon">Checking session</p>
-        <p className="mt-3 section-title text-3xl">Loading your planning workspace…</p>
+      <div className="fixed inset-0 z-40 flex items-center justify-center px-4 py-6 sm:px-6 lg:px-8">
+        <div className="texture absolute inset-0 -z-10 opacity-40" />
+        <div className="panel w-full max-w-2xl rounded-[2.4rem] p-10 text-center shadow-panel">
+          <Logo className="justify-center" iconSize={42} wordmarkClassName="text-4xl" />
+          <p className="mt-6 text-sm uppercase tracking-[0.3em] text-lagoon">Checking session</p>
+          <p className="mt-3 section-title text-3xl">Loading your planning workspace…</p>
+          <p className="mx-auto mt-4 max-w-xl text-sm leading-6 text-stone-500">
+            We&apos;re confirming your account and reopening the trips, dates, and destination context tied to it.
+          </p>
+        </div>
       </div>
     );
   }

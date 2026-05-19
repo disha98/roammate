@@ -1,53 +1,26 @@
 "use client";
 
-import Image from "next/image";
-import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
 import { RequireAuth } from "@/components/require-auth";
-import { Button, Input, Panel, StatusBadge, Textarea } from "@/components/ui";
-import { WeatherSummary } from "@/components/weather-summary";
-import { VisaRequirement } from "@/components/visa-requirement";
+import { SectionErrorBoundary } from "@/components/section-error-boundary";
+import { SkeletonHero, SkeletonDestinationCard } from "@/components/skeleton";
+import { useToast } from "@/components/toast";
+import { Button, Panel } from "@/components/ui";
 import { useAppState } from "@/context/app-state";
 import type {
-  DateWindowOption,
   DestinationCatalogItem,
-  DestinationEnrichment,
+  RecommendedDestination,
   TripStatus
 } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
-
-const statusFlow: TripStatus[] = ["collecting_members", "planning", "voting", "decided"];
-
-interface DestinationDetailsResponse {
-  destination: DestinationCatalogItem;
-  enrichment: DestinationEnrichment;
-  tripDuration: number;
-  localCostSummary: DestinationEnrichment["localCosts"] & {
-    tripTotalUsd: number;
-  };
-  memberEstimates: {
-    profileId: string;
-    displayName: string;
-    homeCity: string;
-    travelCostUsd: number | null;
-    localTripCostUsd: number;
-    totalTripCostUsd: number | null;
-    note: string;
-  }[];
-}
-
-function hasReliableDestinationIntelligence(
-  _destination: DestinationCatalogItem,
-  enrichment: DestinationEnrichment | undefined
-) {
-  if (!enrichment) {
-    return false;
-  }
-
-  return enrichment.source === "llm_synthesized";
-}
+import { DestinationRecommendationsResponse } from "./_components/utils";
+import { TripHero } from "./_components/trip-hero";
+import { CollectingMembersStage } from "./_components/collecting-members-stage";
+import { PlanningStage } from "./_components/planning-stage";
+import { VotingStage } from "./_components/voting-stage";
+import { DecidedStage } from "./_components/decided-stage";
 
 export default function TripWorkspacePage() {
   const params = useParams<{ tripId: string }>();
@@ -67,6 +40,8 @@ export default function TripWorkspacePage() {
     getVoteForCurrentUser,
     getVotesForTrip,
     setFinalDateOptions,
+    lockTripDecision,
+    reopenTripDecision,
     createInviteLink,
     revokeInvite,
     removeTripMember,
@@ -80,6 +55,8 @@ export default function TripWorkspacePage() {
     submitVote,
     updateTripStatus
   } = useAppState();
+
+  const { toast } = useToast();
 
   const trip = getTripById(params.tripId);
   const members = getTripMembers(params.tripId);
@@ -113,6 +90,9 @@ export default function TripWorkspacePage() {
   const [editStart, setEditStart] = useState(trip?.tentativeStart ?? "");
   const [editEnd, setEditEnd] = useState(trip?.tentativeEnd ?? "");
   const [editDuration, setEditDuration] = useState(String(trip?.tripDuration ?? 7));
+  const [recommendedDestinations, setRecommendedDestinations] = useState<RecommendedDestination[]>([]);
+  const [showRecommendations, setShowRecommendations] = useState(false);
+  const [isLoadingRecommendations, setIsLoadingRecommendations] = useState(false);
 
   useEffect(() => {
     if (!currentProfile) {
@@ -156,7 +136,7 @@ export default function TripWorkspacePage() {
 
         setDestinationResults([]);
         setSelectedDestination(null);
-        setDestinationSearchMessage("We couldn’t load destination suggestions right now.");
+        setDestinationSearchMessage("We couldn't load destination suggestions right now.");
       } finally {
         setIsSearchingDestinations(false);
       }
@@ -167,6 +147,46 @@ export default function TripWorkspacePage() {
       window.clearTimeout(timeout);
     };
   }, [currentProfile, destinationQuery]);
+
+  useEffect(() => {
+    if (!currentProfile || trip?.status !== "planning") {
+      return;
+    }
+
+    const controller = new AbortController();
+
+    void (async () => {
+      try {
+        setIsLoadingRecommendations(true);
+
+        const response = await fetch(
+          `/api/destinations/recommendations?tripId=${encodeURIComponent(params.tripId)}`,
+          { signal: controller.signal }
+        );
+
+        if (!response.ok) {
+          throw new Error("Recommendations failed");
+        }
+
+        const payload = (await response.json()) as DestinationRecommendationsResponse;
+        const nextRecommendations = payload.recommendations ?? [];
+
+        setRecommendedDestinations(nextRecommendations);
+        setShowRecommendations(nextRecommendations.length > 0);
+      } catch (error) {
+        if ((error as Error).name === "AbortError") {
+          return;
+        }
+
+        setRecommendedDestinations([]);
+        setShowRecommendations(false);
+      } finally {
+        setIsLoadingRecommendations(false);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [currentProfile, params.tripId, trip?.status, tripDestinations.length]);
 
   const availabilityByMember = useMemo(() => {
     return members.map((member) => ({
@@ -187,10 +207,14 @@ export default function TripWorkspacePage() {
     return (
       <RequireAuth>
         <AppShell>
-          <Panel className="p-10 text-center">
-            <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Loading trip</p>
-            <p className="section-title mt-4 text-4xl">Opening your planning workspace…</p>
-          </Panel>
+          <div className="space-y-6">
+            <SkeletonHero />
+            <div className="grid gap-6 md:grid-cols-2 xl:grid-cols-3">
+              <SkeletonDestinationCard />
+              <SkeletonDestinationCard />
+              <SkeletonDestinationCard />
+            </div>
+          </div>
         </AppShell>
       </RequireAuth>
     );
@@ -202,7 +226,7 @@ export default function TripWorkspacePage() {
         <AppShell>
           <Panel className="p-10 text-center">
             <p className="text-xs uppercase tracking-[0.35em] text-coral">Trip not found</p>
-            <p className="section-title mt-4 text-4xl">We couldn’t find this trip.</p>
+            <p className="section-title mt-4 text-4xl">We couldn&apos;t find this trip.</p>
             <Button href="/dashboard" className="mt-6">
               Back to dashboard
             </Button>
@@ -216,11 +240,13 @@ export default function TripWorkspacePage() {
 
   async function handleDeleteTrip(tripId: string) {
     await deleteTrip(tripId);
+    toast("Trip deleted");
     router.push("/dashboard");
   }
 
   async function handleLeaveTrip(tripId: string) {
     await leaveTrip(tripId);
+    toast("You left the trip");
     router.push("/dashboard");
   }
 
@@ -231,15 +257,19 @@ export default function TripWorkspacePage() {
 
     const invite = await createInviteLink(activeTrip.id);
     setGeneratedLink(`${window.location.origin}/invite/${invite.token}`);
+    toast("Invite link generated");
   }
 
   async function handleAvailabilitySubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await addAvailability(activeTrip.id, rangeStart, rangeEnd);
+    toast("Dates saved");
   }
 
   function handleUseSuggestedAvailability(startDate: string, endDate: string) {
-    void addAvailability(activeTrip.id, startDate, endDate);
+    void addAvailability(activeTrip.id, startDate, endDate).then(() =>
+      toast("Suggested dates added")
+    );
   }
 
   async function handleDestinationSubmit(event: FormEvent<HTMLFormElement>) {
@@ -248,10 +278,16 @@ export default function TripWorkspacePage() {
       return;
     }
     await addDestinationToTrip(activeTrip.id, effectiveSelectedDestination, destinationNote);
+    toast(`Added ${effectiveSelectedDestination.city} to trip`);
     setDestinationNote("");
     setDestinationQuery("");
     setDestinationResults([]);
     setSelectedDestination(null);
+  }
+
+  async function handleRecommendedDestinationAdd(destination: DestinationCatalogItem) {
+    await addDestinationToTrip(activeTrip.id, destination, "Suggested for this group's trip window.");
+    toast(`Added ${destination.city} to trip`);
   }
 
   function handleToggleFinalDateOption(optionId: string) {
@@ -265,10 +301,13 @@ export default function TripWorkspacePage() {
     <RequireAuth>
       <AppShell>
         <div className="space-y-6">
+          <SectionErrorBoundary key={`hero-${activeTrip.id}`} fallbackTitle="Could not load trip header">
           <TripHero
             trip={activeTrip}
             isPlanner={isPlanner}
-            onStatusChange={updateTripStatus}
+            onStatusChange={async (tripId: string, status: TripStatus) => {
+              await updateTripStatus(tripId, status);
+            }}
             onLeaveTrip={handleLeaveTrip}
             onDeleteTrip={handleDeleteTrip}
             onUpdateTrip={updateTrip}
@@ -284,8 +323,10 @@ export default function TripWorkspacePage() {
             editDuration={editDuration}
             setEditDuration={setEditDuration}
           />
+          </SectionErrorBoundary>
 
           {activeTrip.status === "collecting_members" ? (
+            <SectionErrorBoundary key={`collect-${activeTrip.id}`} fallbackTitle="Could not load members section">
             <CollectingMembersStage
               trip={activeTrip}
               members={members}
@@ -295,14 +336,24 @@ export default function TripWorkspacePage() {
               copied={copied}
               setCopied={setCopied}
               onGenerateLink={handleGenerateLink}
-              onRevokeInvite={revokeInvite}
-              onRemoveMember={removeTripMember}
-              onAdvanceToPlanning={updateTripStatus}
+              onRevokeInvite={async (inviteId: string) => {
+                await revokeInvite(inviteId);
+                toast("Invite revoked");
+              }}
+              onRemoveMember={async (tripId: string, memberId: string) => {
+                await removeTripMember(tripId, memberId);
+                toast("Member removed");
+              }}
+              onAdvanceToPlanning={async (tripId: string, status: TripStatus) => {
+                await updateTripStatus(tripId, status);
+              }}
               isPlanner={isPlanner}
             />
+            </SectionErrorBoundary>
           ) : null}
 
           {activeTrip.status === "planning" ? (
+            <SectionErrorBoundary key={`plan-${activeTrip.id}`} fallbackTitle="Could not load planning section">
             <PlanningStage
               trip={activeTrip}
               currentProfileId={currentProfile?.id}
@@ -317,7 +368,10 @@ export default function TripWorkspacePage() {
               setRangeEnd={setRangeEnd}
               onSubmitAvailability={handleAvailabilitySubmit}
               onUseSuggestedAvailability={handleUseSuggestedAvailability}
-              onRemoveAvailability={removeAvailability}
+              onRemoveAvailability={async (rangeId: string) => {
+                await removeAvailability(rangeId);
+                toast("Date range removed");
+              }}
               onToggleFinalDateOption={handleToggleFinalDateOption}
               tripDestinations={tripDestinations}
               destinationQuery={destinationQuery}
@@ -330,14 +384,25 @@ export default function TripWorkspacePage() {
               destinationNote={destinationNote}
               setDestinationNote={setDestinationNote}
               onSubmitDestination={handleDestinationSubmit}
-              onToggleShortlist={toggleDestinationShortlist}
+              recommendedDestinations={recommendedDestinations}
+              showRecommendations={showRecommendations}
+              isLoadingRecommendations={isLoadingRecommendations}
+              onAddRecommendedDestination={handleRecommendedDestinationAdd}
+              onToggleShortlist={async (tdId: string) => {
+                await toggleDestinationShortlist(tdId);
+                toast("Shortlist updated");
+              }}
               isPlanner={isPlanner}
               canOpenVoting={canOpenVoting}
-              onOpenVoting={() => void updateTripStatus(activeTrip.id, "voting")}
+              onOpenVoting={async () => {
+                await updateTripStatus(activeTrip.id, "voting");
+              }}
             />
+            </SectionErrorBoundary>
           ) : null}
 
           {activeTrip.status === "voting" ? (
+            <SectionErrorBoundary key={`vote-${activeTrip.id}`} fallbackTitle="Could not load voting section">
             <VotingStage
               trip={activeTrip}
               members={members}
@@ -347,1405 +412,44 @@ export default function TripWorkspacePage() {
               dateVote={dateVote?.optionId}
               destinationVotes={destinationVotes}
               dateVotes={dateVotes}
-              onVote={submitVote}
+              onVote={async (tripId: string, type: "destination" | "date_window", optionId: string) => {
+                await submitVote(tripId, type, optionId);
+                toast("Vote recorded");
+              }}
+              isPlanner={isPlanner}
+              onLockDecision={async (...args: Parameters<typeof lockTripDecision>) => {
+                await lockTripDecision(...args);
+                toast("Decision locked!");
+              }}
+              lastLockedDestinationLabel={
+                activeTrip.finalDestinationSnapshot
+                  ? `${activeTrip.finalDestinationSnapshot.city}, ${activeTrip.finalDestinationSnapshot.country}`
+                  : undefined
+              }
+              lastLockedDateLabel={
+                activeTrip.finalDateStart && activeTrip.finalDateEnd
+                  ? `${formatDate(activeTrip.finalDateStart)} to ${formatDate(activeTrip.finalDateEnd)}`
+                  : undefined
+              }
             />
+            </SectionErrorBoundary>
           ) : null}
 
           {activeTrip.status === "decided" ? (
+            <SectionErrorBoundary key={`decided-${activeTrip.id}`} fallbackTitle="Could not load decision">
             <DecidedStage
               trip={activeTrip}
               members={members}
-              shortlist={shortlist}
-              dateOptions={finalDateOptions}
-              destinationVotes={destinationVotes}
-              dateVotes={dateVotes}
+              onReopenDecision={async (tripId: string) => {
+                await reopenTripDecision(tripId);
+                toast("Decision reopened — back to voting");
+              }}
+              isPlanner={isPlanner}
             />
+            </SectionErrorBoundary>
           ) : null}
         </div>
       </AppShell>
     </RequireAuth>
   );
 }
-
-function TripHero({
-  trip,
-  isPlanner,
-  onStatusChange,
-  onLeaveTrip,
-  onDeleteTrip,
-  onUpdateTrip,
-  canOpenVoting,
-  showDeleteConfirm,
-  setShowDeleteConfirm,
-  showEditWindow,
-  setShowEditWindow,
-  editStart,
-  setEditStart,
-  editEnd,
-  setEditEnd,
-  editDuration,
-  setEditDuration
-}: {
-  trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
-  isPlanner: boolean;
-  onStatusChange: (tripId: string, status: TripStatus) => Promise<void>;
-  onLeaveTrip: (tripId: string) => Promise<void>;
-  onDeleteTrip: (tripId: string) => Promise<void>;
-  onUpdateTrip: (tripId: string, input: { tentativeStart: string; tentativeEnd: string; tripDuration: number }) => Promise<void>;
-  canOpenVoting: boolean;
-  showDeleteConfirm: boolean;
-  setShowDeleteConfirm: (value: boolean) => void;
-  showEditWindow: boolean;
-  setShowEditWindow: (value: boolean) => void;
-  editStart: string;
-  setEditStart: (value: string) => void;
-  editEnd: string;
-  setEditEnd: (value: string) => void;
-  editDuration: string;
-  setEditDuration: (value: string) => void;
-}) {
-  return (
-    <Panel className="overflow-hidden">
-      <div className="grid gap-6 p-6 xl:grid-cols-[1.25fr_0.75fr]">
-        <div>
-          <div className="flex flex-wrap items-center gap-3">
-            <Link href="/dashboard" className="text-sm font-semibold text-lagoon">
-              Back to dashboard
-            </Link>
-            <StatusBadge status={trip.status} />
-            <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-stone-700">
-              {trip.groupName}
-            </span>
-          </div>
-          <h1 className="section-title mt-4 text-5xl text-ink">{trip.title}</h1>
-          <p className="mt-4 max-w-4xl text-sm text-stone-600">{trip.summary}</p>
-          <div className="mt-5">
-            <p className="text-xs uppercase tracking-[0.25em] text-stone-500">
-              Target window: {formatDate(trip.tentativeStart)} to {formatDate(trip.tentativeEnd)} · {trip.tripDuration} day trip
-            </p>
-            {isPlanner ? (
-              showEditWindow ? (
-                <div className="mt-3 rounded-[1.5rem] border border-ink/8 bg-white/80 p-4">
-                  <p className="text-sm font-semibold text-ink">Edit trip window</p>
-                  <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                    <div className="space-y-1">
-                      <label className="text-xs text-stone-500" htmlFor="edit-start">Window opens</label>
-                      <Input id="edit-start" type="date" value={editStart} onChange={(e) => setEditStart(e.target.value)} />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs text-stone-500" htmlFor="edit-end">Window closes</label>
-                      <Input id="edit-end" type="date" value={editEnd} onChange={(e) => setEditEnd(e.target.value)} />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-xs text-stone-500" htmlFor="edit-duration">Trip length (days)</label>
-                      <Input id="edit-duration" type="number" min={1} value={editDuration} onChange={(e) => setEditDuration(e.target.value)} />
-                    </div>
-                  </div>
-                  <div className="mt-3 flex gap-2">
-                    <Button
-                      onClick={() => {
-                        void onUpdateTrip(trip.id, {
-                          tentativeStart: editStart,
-                          tentativeEnd: editEnd,
-                          tripDuration: Number(editDuration) || 7
-                        });
-                        setShowEditWindow(false);
-                      }}
-                    >
-                      Save
-                    </Button>
-                    <Button variant="secondary" onClick={() => setShowEditWindow(false)}>
-                      Cancel
-                    </Button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="mt-2 text-xs font-medium text-lagoon underline underline-offset-2"
-                  onClick={() => {
-                    setEditStart(trip.tentativeStart);
-                    setEditEnd(trip.tentativeEnd);
-                    setEditDuration(String(trip.tripDuration));
-                    setShowEditWindow(true);
-                  }}
-                >
-                  Edit window
-                </button>
-              )
-            ) : null}
-          </div>
-        </div>
-        <div className="rounded-[2rem] bg-ink p-5 text-white">
-          <p className="text-sm uppercase tracking-[0.35em] text-sun">Trip stage</p>
-          <p className="mt-3 text-sm text-stone-200">
-            {stageCopy[trip.status]}
-          </p>
-          {isPlanner ? (
-            <div className="mt-4 flex flex-wrap gap-2">
-              {statusFlow.map((status) => (
-                <Button
-                  key={status}
-                  variant={trip.status === status ? "primary" : "secondary"}
-                  disabled={status === "voting" && !canOpenVoting}
-                  className={
-                    trip.status === status
-                      ? "bg-white text-ink hover:bg-white"
-                      : "border-white/10 bg-white/10 text-white hover:border-white/25 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                  }
-                  onClick={() => void onStatusChange(trip.id, status)}
-                >
-                  {statusLabel(status)}
-                </Button>
-              ))}
-            </div>
-            
-            
-          ) : (
-            <div className="mt-4">
-              <p className="text-sm text-stone-300">
-                The planner controls when this trip moves into the next stage.
-              </p>
-              <Button
-                variant="secondary"
-                className="mt-3 border-coral/30 bg-coral/10 text-coral hover:border-coral/50 hover:text-coral"
-                onClick={() => void onLeaveTrip(trip.id)}
-              >
-                Leave trip
-              </Button>
-            </div>
-          )}
-          {isPlanner && !canOpenVoting && trip.status === "planning" ? (
-            <p className="mt-4 text-sm text-stone-300">
-              Choose at least one shortlisted destination and one final date window before voting opens.
-            </p>
-          ) : null}
-          {isPlanner ? (
-            <div className="mt-4">
-              {showDeleteConfirm ? (
-                <div className="rounded-2xl bg-coral/10 p-3">
-                  <p className="text-sm text-coral">Delete this trip permanently? This cannot be undone.</p>
-                  <div className="mt-2 flex gap-2">
-                    <button
-                      type="button"
-                      className="rounded-full bg-coral px-3 py-1 text-xs font-semibold text-white"
-                      onClick={() => void onDeleteTrip(trip.id)}
-                    >
-                      Yes, delete
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-stone-300"
-                      onClick={() => setShowDeleteConfirm(false)}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="text-xs font-medium text-stone-400 underline underline-offset-2 hover:text-coral"
-                  onClick={() => setShowDeleteConfirm(true)}
-                >
-                  Delete trip
-                </button>
-              )}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </Panel>
-  );
-}
-
-function CollectingMembersStage({
-  trip,
-  members,
-  invites,
-  getInviteStatus,
-  generatedLink,
-  copied,
-  setCopied,
-  onGenerateLink,
-  onRevokeInvite,
-  onRemoveMember,
-  onAdvanceToPlanning,
-  isPlanner
-}: {
-  trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
-  members: ReturnType<ReturnType<typeof useAppState>["getTripMembers"]>;
-  invites: ReturnType<ReturnType<typeof useAppState>["getTripInvites"]>;
-  getInviteStatus: ReturnType<typeof useAppState>["getInviteStatus"];
-  generatedLink: string;
-  copied: boolean;
-  setCopied: (value: boolean) => void;
-  onGenerateLink: () => Promise<void>;
-  onRevokeInvite: (inviteId: string) => Promise<void>;
-  onRemoveMember: (tripId: string, profileId: string) => Promise<void>;
-  onAdvanceToPlanning: (tripId: string, status: TripStatus) => Promise<void>;
-  isPlanner: boolean;
-}) {
-  return (
-    <div className="grid gap-6 xl:grid-cols-[1.05fr_0.95fr]">
-      <Panel className="p-6">
-        <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Who’s in</p>
-        <h2 className="section-title mt-2 text-3xl">Build the travel crew first.</h2>
-        <p className="mt-3 text-sm text-stone-600">
-          Once everyone has joined, this trip can move into dates and destination planning.
-        </p>
-        <div className="mt-6 grid gap-3 md:grid-cols-2">
-          {members.map(({ id, profile, role, profileId }) => (
-            <div key={id} className="rounded-[1.6rem] border border-ink/8 bg-white/75 p-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-base font-semibold text-ink">{profile?.displayName}</p>
-                  <p className="text-sm text-stone-500">{profile?.email}</p>
-                </div>
-                <span className="rounded-full bg-ink px-3 py-1 text-xs font-semibold text-white">
-                  {role === "planner" ? "Planner" : "Member"}
-                </span>
-              </div>
-              <p className="mt-3 text-sm text-stone-600">
-                {profile?.homeCity || "City not added yet"} · Passport {profile?.passport || "not added yet"}
-              </p>
-              {isPlanner && role !== "planner" ? (
-                <button
-                  type="button"
-                  className="mt-3 text-sm font-semibold text-coral"
-                  onClick={() => void onRemoveMember(trip.id, profileId)}
-                >
-                  Remove from trip
-                </button>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      </Panel>
-
-      <Panel className="p-6">
-        <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Invites</p>
-        <h2 className="section-title mt-2 text-3xl">Bring everyone into the trip.</h2>
-        {isPlanner ? (
-          <>
-            <div className="mt-5 rounded-[1.75rem] bg-mist p-4">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-semibold text-ink">Invite link</p>
-                  <p className="text-xs text-stone-500">
-                    Share this link with friends — they can preview the trip and join after signing in.
-                  </p>
-                </div>
-                {!generatedLink && (
-                  <Button variant="secondary" onClick={() => void onGenerateLink()}>
-                    Generate link
-                  </Button>
-                )}
-              </div>
-              {generatedLink && (
-                <div className="mt-3 flex items-center gap-2">
-                  <p className="flex-1 break-all rounded-2xl bg-white px-3 py-2 text-sm text-stone-700">
-                    {generatedLink}
-                  </p>
-                  <button
-                    type="button"
-                    className="shrink-0 rounded-full bg-lagoon px-4 py-2 text-sm font-semibold text-white transition hover:bg-lagoon/85"
-                    onClick={() => {
-                      void navigator.clipboard.writeText(generatedLink);
-                      setCopied(true);
-                      window.setTimeout(() => setCopied(false), 2000);
-                    }}
-                  >
-                    {copied ? "Copied!" : "Copy"}
-                  </button>
-                </div>
-              )}
-            </div>
-          </>
-        ) : (
-          <div className="mt-5 rounded-[1.75rem] bg-mist p-4 text-sm text-stone-700">
-            The planner is still gathering the group. Once everyone is here, the trip will move
-            into planning.
-          </div>
-        )}
-        {isPlanner && invites.length > 0 ? (
-          <div className="mt-5">
-            <p className="text-sm font-semibold text-ink">Invite activity</p>
-            <div className="mt-3 space-y-2">
-              {invites.map((invite) => (
-                <div key={invite.id} className="flex items-center justify-between gap-3 rounded-2xl bg-white/70 px-3 py-2 text-sm text-stone-600">
-                  <span>
-                    {invite.type === "email" ? `Invited ${invite.email}` : "Share link"} ·{" "}
-                    {inviteStatusLabel(getInviteStatus(invite))}
-                  </span>
-                  {getInviteStatus(invite) === "pending" ? (
-                    <button
-                      type="button"
-                      className="font-semibold text-coral"
-                      onClick={() => void onRevokeInvite(invite.id)}
-                    >
-                      Revoke
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-        <div className="mt-5 rounded-[1.75rem] bg-ink p-4 text-white">
-          <p className="text-sm uppercase tracking-[0.3em] text-sun">Next step</p>
-          <p className="mt-2 text-sm text-stone-200">
-            When the group is in place, move this trip to Planning so everyone can share dates and
-            compare destinations.
-          </p>
-          {isPlanner ? (
-            <Button className="mt-4" onClick={() => void onAdvanceToPlanning(trip.id, "planning")}>
-              Move to planning
-            </Button>
-          ) : null}
-        </div>
-      </Panel>
-    </div>
-  );
-}
-
-function PlanningStage({
-  trip,
-  currentProfileId,
-  members,
-  availabilityByMember,
-  suggestedAvailability,
-  dateOptions,
-  finalDateOptions,
-  rangeStart,
-  setRangeStart,
-  rangeEnd,
-  setRangeEnd,
-  onSubmitAvailability,
-  onUseSuggestedAvailability,
-  onRemoveAvailability,
-  onToggleFinalDateOption,
-  tripDestinations,
-  destinationQuery,
-  setDestinationQuery,
-  destinationResults,
-  isSearchingDestinations,
-  destinationSearchMessage,
-  selectedDestination,
-  onSelectDestination,
-  destinationNote,
-  setDestinationNote,
-  onSubmitDestination,
-  onToggleShortlist,
-  isPlanner,
-  canOpenVoting,
-  onOpenVoting
-}: {
-  trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
-  currentProfileId: string | undefined;
-  members: ReturnType<ReturnType<typeof useAppState>["getTripMembers"]>;
-  availabilityByMember: {
-    member: ReturnType<ReturnType<typeof useAppState>["getTripMembers"]>[number];
-    ranges: ReturnType<ReturnType<typeof useAppState>["getTripAvailability"]>;
-  }[];
-  suggestedAvailability: { label: string; startDate: string; endDate: string; sourceWindowId: string }[];
-  dateOptions: DateWindowOption[];
-  finalDateOptions: DateWindowOption[];
-  rangeStart: string;
-  setRangeStart: (value: string) => void;
-  rangeEnd: string;
-  setRangeEnd: (value: string) => void;
-  onSubmitAvailability: (event: FormEvent<HTMLFormElement>) => void;
-  onUseSuggestedAvailability: (startDate: string, endDate: string) => void;
-  onRemoveAvailability: (rangeId: string) => void;
-  onToggleFinalDateOption: (optionId: string) => void;
-  tripDestinations: ReturnType<ReturnType<typeof useAppState>["getTripDestinations"]>;
-  destinationQuery: string;
-  setDestinationQuery: (value: string) => void;
-  destinationResults: DestinationCatalogItem[];
-  isSearchingDestinations: boolean;
-  destinationSearchMessage: string;
-  selectedDestination: DestinationCatalogItem | null;
-  onSelectDestination: (value: DestinationCatalogItem | null) => void;
-  destinationNote: string;
-  setDestinationNote: (value: string) => void;
-  onSubmitDestination: (event: FormEvent<HTMLFormElement>) => void;
-  onToggleShortlist: (tripDestinationId: string) => void;
-  isPlanner: boolean;
-  canOpenVoting: boolean;
-  onOpenVoting: () => void;
-}) {
-  return (
-    <div className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-[0.72fr_1.28fr]">
-        <PlanningSidebar
-          trip={trip}
-          currentProfileId={currentProfileId}
-          availabilityByMember={availabilityByMember}
-          suggestedAvailability={suggestedAvailability}
-          dateOptions={dateOptions}
-          finalDateOptions={finalDateOptions}
-          isPlanner={isPlanner}
-          rangeStart={rangeStart}
-          setRangeStart={setRangeStart}
-          rangeEnd={rangeEnd}
-          setRangeEnd={setRangeEnd}
-          onSubmitAvailability={onSubmitAvailability}
-          onUseSuggestedAvailability={onUseSuggestedAvailability}
-          onRemoveAvailability={onRemoveAvailability}
-          onToggleFinalDateOption={onToggleFinalDateOption}
-        />
-        <DestinationBoard
-          trip={trip}
-          members={members}
-          tripDestinations={tripDestinations}
-          destinationQuery={destinationQuery}
-          setDestinationQuery={setDestinationQuery}
-          destinationResults={destinationResults}
-          isSearchingDestinations={isSearchingDestinations}
-          destinationSearchMessage={destinationSearchMessage}
-          selectedDestination={selectedDestination}
-          onSelectDestination={onSelectDestination}
-          destinationNote={destinationNote}
-          setDestinationNote={setDestinationNote}
-          onSubmitDestination={onSubmitDestination}
-          onToggleShortlist={onToggleShortlist}
-          isPlanner={isPlanner}
-        />
-      </div>
-      {isPlanner ? (
-        <Panel className="p-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-sm uppercase tracking-[0.3em] text-lagoon">Ready for the final call?</p>
-              <p className="mt-2 text-sm text-stone-600">
-                {canOpenVoting
-                  ? "The shortlist and date windows are set. Open voting so the group can decide."
-                  : "Choose at least one shortlisted destination and one final date window before voting opens."}
-              </p>
-            </div>
-            <Button disabled={!canOpenVoting} onClick={onOpenVoting}>
-              Open voting
-            </Button>
-          </div>
-        </Panel>
-      ) : null}
-    </div>
-  );
-}
-
-function PlanningSidebar({
-  trip,
-  currentProfileId,
-  availabilityByMember,
-  suggestedAvailability,
-  dateOptions,
-  finalDateOptions,
-  isPlanner,
-  rangeStart,
-  setRangeStart,
-  rangeEnd,
-  setRangeEnd,
-  onSubmitAvailability,
-  onUseSuggestedAvailability,
-  onRemoveAvailability,
-  onToggleFinalDateOption
-}: {
-  trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
-  currentProfileId: string | undefined;
-  availabilityByMember: {
-    member: ReturnType<ReturnType<typeof useAppState>["getTripMembers"]>[number];
-    ranges: ReturnType<ReturnType<typeof useAppState>["getTripAvailability"]>;
-  }[];
-  suggestedAvailability: { label: string; startDate: string; endDate: string; sourceWindowId: string }[];
-  dateOptions: DateWindowOption[];
-  finalDateOptions: DateWindowOption[];
-  isPlanner: boolean;
-  rangeStart: string;
-  setRangeStart: (value: string) => void;
-  rangeEnd: string;
-  setRangeEnd: (value: string) => void;
-  onSubmitAvailability: (event: FormEvent<HTMLFormElement>) => void;
-  onUseSuggestedAvailability: (startDate: string, endDate: string) => void;
-  onRemoveAvailability: (rangeId: string) => void;
-  onToggleFinalDateOption: (optionId: string) => void;
-}) {
-  return (
-    <div className="space-y-6">
-      <Panel className="p-6">
-        <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Dates</p>
-        <h2 className="section-title mt-2 text-3xl">See when the trip can actually happen.</h2>
-        <p className="mt-3 text-sm text-stone-600">
-          Everyone can add one or more date ranges inside the target window.
-        </p>
-        {suggestedAvailability.length > 0 ? (
-          <div className="mt-5 rounded-[1.8rem] bg-mist p-4">
-            <p className="text-sm font-semibold text-ink">From your profile</p>
-            <div className="mt-3 space-y-2">
-              {suggestedAvailability.map((suggestion) => (
-                <div
-                  key={suggestion.sourceWindowId}
-                  className="flex items-center justify-between gap-3 rounded-2xl bg-white px-3 py-3 text-sm text-stone-700"
-                >
-                  <div>
-                    <p className="font-semibold text-ink">{suggestion.label}</p>
-                    <p>
-                      {formatDate(suggestion.startDate)} to {formatDate(suggestion.endDate)}
-                    </p>
-                  </div>
-                  <button
-                    className="font-semibold text-lagoon"
-                    onClick={() => onUseSuggestedAvailability(suggestion.startDate, suggestion.endDate)}
-                    type="button"
-                  >
-                    Use these dates
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
-        <form className="mt-5 grid gap-3" onSubmit={onSubmitAvailability}>
-          <Input type="date" value={rangeStart} onChange={(event) => setRangeStart(event.target.value)} />
-          <Input type="date" value={rangeEnd} onChange={(event) => setRangeEnd(event.target.value)} />
-          <Button type="submit">Save my dates</Button>
-        </form>
-      </Panel>
-      <Panel className="p-6">
-        <p className="text-sm font-semibold text-ink">Best matching windows</p>
-        <div className="mt-3 space-y-2">
-          {dateOptions.length === 0 ? (
-            <p className="text-sm text-stone-500">No overlap yet. More people need to add dates.</p>
-          ) : (
-            dateOptions.map((window) => (
-              <button
-                key={window.id}
-                type="button"
-                onClick={() => onToggleFinalDateOption(window.id)}
-                disabled={!isPlanner}
-                className={`w-full rounded-2xl px-3 py-3 text-left text-sm ${
-                  finalDateOptions.some((option) => option.id === window.id)
-                    ? "bg-lagoon/10 text-lagoon ring-1 ring-lagoon"
-                    : "bg-mist text-stone-700"
-                } ${!isPlanner ? "cursor-default opacity-80" : ""}`}
-              >
-                <span className="block">
-                  {formatDate(window.startDate)} to {formatDate(window.endDate)} · {window.coverage} people available
-                </span>
-                <span className="mt-1 block text-xs uppercase tracking-[0.2em]">
-                  {finalDateOptions.some((option) => option.id === window.id)
-                    ? "Included in final vote"
-                    : isPlanner
-                      ? "Click to include in final vote"
-                      : "Planner chooses final vote windows"}
-                </span>
-              </button>
-            ))
-          )}
-        </div>
-        <p className="mt-4 text-xs uppercase tracking-[0.25em] text-stone-500">
-          Trip window: {formatDate(trip.tentativeStart)} to {formatDate(trip.tentativeEnd)}
-        </p>
-      </Panel>
-      <Panel className="p-6">
-        <p className="text-sm font-semibold text-ink">Responses</p>
-        <div className="mt-4 space-y-4">
-          {availabilityByMember.map(({ member, ranges }) => (
-            <div key={member.id} className="rounded-[1.6rem] border border-ink/8 bg-white/75 p-4">
-              <p className="text-base font-semibold text-ink">{member.profile?.displayName}</p>
-              <div className="mt-3 space-y-2">
-                {ranges.length === 0 ? (
-                  <p className="text-sm text-stone-500">No dates shared yet.</p>
-                ) : (
-                  ranges.map((range) => (
-                    <div key={range.id} className="flex items-center justify-between gap-3 rounded-2xl bg-mist px-3 py-2 text-sm">
-                      <span>
-                        {formatDate(range.startDate)} to {formatDate(range.endDate)}
-                      </span>
-                      {member.profileId === currentProfileId ? (
-                        <button
-                          className="font-semibold text-coral"
-                          onClick={() => void onRemoveAvailability(range.id)}
-                          type="button"
-                        >
-                          Remove
-                        </button>
-                      ) : null}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      </Panel>
-    </div>
-  );
-}
-
-function DestinationBoard({
-  trip,
-  members,
-  tripDestinations,
-  destinationQuery,
-  setDestinationQuery,
-  destinationResults,
-  isSearchingDestinations,
-  destinationSearchMessage,
-  selectedDestination,
-  onSelectDestination,
-  destinationNote,
-  setDestinationNote,
-  onSubmitDestination,
-  onToggleShortlist,
-  isPlanner
-}: {
-  trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
-  members: ReturnType<ReturnType<typeof useAppState>["getTripMembers"]>;
-  tripDestinations: ReturnType<ReturnType<typeof useAppState>["getTripDestinations"]>;
-  destinationQuery: string;
-  setDestinationQuery: (value: string) => void;
-  destinationResults: DestinationCatalogItem[];
-  isSearchingDestinations: boolean;
-  destinationSearchMessage: string;
-  selectedDestination: DestinationCatalogItem | null;
-  onSelectDestination: (value: DestinationCatalogItem | null) => void;
-  destinationNote: string;
-  setDestinationNote: (value: string) => void;
-  onSubmitDestination: (event: FormEvent<HTMLFormElement>) => void;
-  onToggleShortlist: (tripDestinationId: string) => void;
-  isPlanner: boolean;
-}) {
-  const [activeDestinationId, setActiveDestinationId] = useState<string | null>(null);
-  const [destinationDetailsById, setDestinationDetailsById] = useState<Record<string, DestinationDetailsResponse>>({});
-  const [loadingDestinationId, setLoadingDestinationId] = useState<string | null>(null);
-  const [destinationDetailsError, setDestinationDetailsError] = useState("");
-
-  const activeEntry = activeDestinationId
-    ? tripDestinations.find((entry) => entry.destinationId === activeDestinationId)
-    : undefined;
-  const activeDetails = activeDestinationId ? destinationDetailsById[activeDestinationId] : undefined;
-  const activeDestination = activeEntry?.destination;
-
-  async function openDestinationDetails(destinationId: string) {
-    setActiveDestinationId(destinationId);
-    setDestinationDetailsError("");
-
-    if (destinationDetailsById[destinationId]) {
-      return;
-    }
-
-    setLoadingDestinationId(destinationId);
-    try {
-      const response = await fetch(
-        `/api/destinations/enrichment?destinationId=${encodeURIComponent(destinationId)}&tripId=${encodeURIComponent(trip.id)}`
-      );
-      if (!response.ok) {
-        throw new Error("Destination enrichment failed");
-      }
-
-      const payload = (await response.json()) as DestinationDetailsResponse;
-      setDestinationDetailsById((current) => ({
-        ...current,
-        [destinationId]: payload
-      }));
-    } catch {
-      setDestinationDetailsError("We couldn’t load the deeper destination breakdown right now.");
-    } finally {
-      setLoadingDestinationId(null);
-    }
-  }
-
-  return (
-    <>
-      <Panel className="p-6">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Destinations</p>
-            <h2 className="section-title mt-2 text-3xl">Compare places side by side.</h2>
-            <p className="mt-2 text-sm text-stone-600">
-              Add destinations, read the vibe, check visas, and move the strongest options into the
-              shortlist.
-            </p>
-          </div>
-        </div>
-
-        <form className="mt-5 grid gap-3 rounded-[1.8rem] bg-mist p-4 lg:grid-cols-[1fr_1.2fr_auto]" onSubmit={onSubmitDestination}>
-          <div className="lg:col-span-3">
-            <p className="text-sm text-stone-700">
-              Everyone in the trip can suggest destination options during planning. The planner still
-              decides which ones move onto the final shortlist.
-            </p>
-          </div>
-          <div className="space-y-2">
-            <Input
-              value={destinationQuery}
-              onChange={(event) => setDestinationQuery(event.target.value)}
-              placeholder="Search a city worldwide"
-            />
-            <div className="min-h-5 text-xs text-stone-500">
-              {isSearchingDestinations
-                ? "Searching major cities..."
-                : destinationSearchMessage}
-            </div>
-            {destinationResults.length > 0 ? (
-              <div className="max-h-72 space-y-2 overflow-auto rounded-[1.5rem] border border-ink/8 bg-white/90 p-2">
-                {destinationResults.map((destination) => {
-                  const isSelected = selectedDestination?.id === destination.id;
-
-                  return (
-                    <button
-                      key={destination.id}
-                      className={`flex w-full items-start justify-between gap-3 rounded-[1.2rem] px-3 py-3 text-left transition ${
-                        isSelected ? "bg-lagoon/10 ring-1 ring-lagoon" : "hover:bg-mist"
-                      }`}
-                      onClick={() => onSelectDestination(destination)}
-                      type="button"
-                    >
-                      <div>
-                        <p className="font-semibold text-ink">
-                          {destination.city}
-                          {destination.region ? `, ${destination.region}` : ""}, {destination.country}
-                        </p>
-                        <p className="text-sm text-stone-600">
-                          {destination.population ? `Population ${destination.population.toLocaleString()}` : "Major city"}
-                        </p>
-                      </div>
-                      <span className="rounded-full bg-mist px-3 py-1 text-xs font-semibold text-stone-700">
-                        {destination.countryCode}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
-          </div>
-          <Textarea
-            rows={1}
-            value={destinationNote}
-            onChange={(event) => setDestinationNote(event.target.value)}
-            placeholder="Why does this place fit the trip?"
-          />
-          <Button type="submit" disabled={!selectedDestination}>
-            Add option
-          </Button>
-        </form>
-
-        <div className="mt-6 grid gap-5 xl:grid-cols-2">
-          {tripDestinations.map((entry) => {
-            if (!entry.destination) {
-              return null;
-            }
-
-            const destination = entry.destination;
-            const details = destinationDetailsById[entry.destinationId];
-            const enrichment = details?.enrichment ?? entry.enrichment;
-            const hasReliableDetails = hasReliableDestinationIntelligence(destination, enrichment);
-            const cardTags =
-              hasReliableDetails && enrichment?.vibeTags?.length ? enrichment.vibeTags : [];
-            const cardSummary =
-              hasReliableDetails && enrichment?.shortSummary ? enrichment.shortSummary : null;
-
-            return (
-              <article
-                key={entry.id}
-                className="overflow-hidden rounded-[2rem] border border-ink/8 bg-white/80 transition hover:-translate-y-0.5 hover:shadow-panel"
-                onClick={() => void openDestinationDetails(entry.destinationId)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    void openDestinationDetails(entry.destinationId);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
-              >
-                <div className="relative h-56">
-                  <Image
-                    src={destination.image}
-                    alt={`${destination.city}, ${destination.country}`}
-                    fill
-                    className="object-cover"
-                  />
-                </div>
-                <div className="p-5">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="section-title text-3xl">
-                        {destination.city}, {destination.country}
-                      </h3>
-                      <p className="mt-2 text-sm text-stone-600">
-                        {cardSummary ?? <span className="italic text-stone-400">Destination details loading…</span>}
-                      </p>
-                    </div>
-                    {isPlanner ? (
-                      <button
-                        className={`rounded-full px-3 py-2 text-xs font-semibold ${entry.shortlist ? "bg-lagoon text-white" : "bg-mist text-stone-700"}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void onToggleShortlist(entry.id);
-                        }}
-                        type="button"
-                      >
-                        {entry.shortlist ? "On final shortlist" : "Move to shortlist"}
-                      </button>
-                    ) : (
-                      <span
-                        className={`rounded-full px-3 py-2 text-xs font-semibold ${
-                          entry.shortlist ? "bg-lagoon text-white" : "bg-mist text-stone-700"
-                        }`}
-                      >
-                        {entry.shortlist ? "On final shortlist" : "Destination option"}
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-4 flex flex-wrap gap-2">
-                    {cardTags.length > 0 ? cardTags.map((tag) => (
-                      <span key={tag} className="rounded-full bg-sun/20 px-3 py-1 text-xs font-semibold text-amber-900">
-                        {tag}
-                      </span>
-                    )) : (
-                      <span className="text-xs italic text-stone-400">Tags unavailable</span>
-                    )}
-                  </div>
-                  {enrichment ? (
-                    <div className="mt-4 rounded-[1.4rem] bg-mist px-4 py-3 text-sm text-stone-700">
-                      <p className="font-semibold text-ink">
-                        {budgetTierLabel(enrichment.budgetTier)} vibe
-                      </p>
-                      <p className="mt-1">
-                        Around {formatUsd(enrichment.localCosts.dailyTotalUsd)}/day locally before travel.
-                      </p>
-                    </div>
-                  ) : null}
-                  <div className="mt-4">
-                    <WeatherSummary
-                      city={destination.city}
-                      lat={destination.lat}
-                      lon={destination.lon}
-                      startDate={trip.tentativeStart}
-                      endDate={trip.tentativeEnd}
-                    />
-                  </div>
-                  <p className="mt-3 text-sm text-stone-600">{entry.note || "No note added yet."}</p>
-                  <div className="mt-4 grid gap-2 md:grid-cols-2">
-                    {members.map((member) => (
-                      <div key={member.id} className="rounded-2xl border border-ink/8 bg-white px-3 py-2 text-sm text-stone-700">
-                        <span className="font-semibold">{member.profile?.displayName}</span>:{" "}
-                        <VisaRequirement
-                          passportCode={member.profile?.passport ?? ""}
-                          destinationCode={destination.countryCode}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-4 text-sm font-semibold text-lagoon">
-                    Click for destination details and per-person cost estimates
-                  </p>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      </Panel>
-
-      {activeDestination ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink/60 px-4 py-8">
-          <div className="absolute inset-0" onClick={() => setActiveDestinationId(null)} />
-          <Panel className="relative max-h-[90vh] w-full max-w-5xl overflow-auto rounded-[2rem] bg-[#f8f5ef] p-0">
-            <div className="relative h-60">
-              <Image
-                src={activeDestination.image}
-                alt={`${activeDestination.city}, ${activeDestination.country}`}
-                fill
-                className="object-cover"
-              />
-              <button
-                type="button"
-                className="absolute right-4 top-4 rounded-full bg-white/90 px-4 py-2 text-sm font-semibold text-ink"
-                onClick={() => setActiveDestinationId(null)}
-              >
-                Close
-              </button>
-            </div>
-            <div className="grid gap-6 p-6 xl:grid-cols-[0.9fr_1.1fr]">
-              {(() => {
-                const activeEnrichment = activeDetails?.enrichment ?? activeEntry.enrichment;
-                const hasReliableDetails = hasReliableDestinationIntelligence(activeDestination, activeEnrichment);
-
-                if (!hasReliableDetails) {
-                  return (
-                    <>
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Destination deep dive</p>
-                        <h3 className="section-title mt-2 text-4xl text-ink">
-                          {activeDestination.city}, {activeDestination.country}
-                        </h3>
-                        <div className="mt-5">
-                          <WeatherSummary
-                            city={activeDestination.city}
-                            lat={activeDestination.lat}
-                            lon={activeDestination.lon}
-                            startDate={trip.tentativeStart}
-                            endDate={trip.tentativeEnd}
-                          />
-                        </div>
-                        <div className="mt-5 rounded-[1.6rem] bg-white/85 p-4">
-                          <p className="text-sm font-semibold text-ink">Why the group suggested it</p>
-                          <p className="mt-2 text-sm text-stone-600">
-                            {activeEntry.note || "No trip-specific note has been added yet."}
-                          </p>
-                        </div>
-                        <div className="mt-5 rounded-[1.6rem] bg-white/85 p-4">
-                          <p className="text-sm font-semibold text-ink">Visa snapshot</p>
-                          <div className="mt-3 grid gap-2">
-                            {members.map((member) => (
-                              <div key={member.id} className="rounded-2xl border border-ink/8 bg-mist px-3 py-2 text-sm text-stone-700">
-                                <span className="font-semibold">{member.profile?.displayName}</span>:{" "}
-                                <VisaRequirement
-                                  passportCode={member.profile?.passport ?? ""}
-                                  destinationCode={activeDestination.countryCode}
-                                />
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="space-y-5">
-                        <div className="rounded-[1.6rem] bg-white/85 p-5">
-                          <p className="text-sm font-semibold text-ink">City details unavailable right now</p>
-                          <p className="mt-2 text-sm text-stone-600">
-                            We don’t have reliable city-specific destination intelligence for this place yet, so we’re not showing generic filler.
-                          </p>
-                          <p className="mt-3 text-sm text-stone-500">
-                            You can still use the weather, visa view, and rough cost snapshot below while richer city details are unavailable.
-                          </p>
-                        </div>
-                        <div className="rounded-[1.6rem] bg-white/85 p-4">
-                          <p className="text-sm font-semibold text-ink">Cost snapshot</p>
-                          <p className="mt-1 text-sm text-stone-500">
-                            Rough mid-range estimate for a {activeDetails?.tripDuration ?? trip.tripDuration}-day trip.
-                          </p>
-                          {destinationDetailsError ? (
-                            <p className="mt-3 text-sm text-coral">{destinationDetailsError}</p>
-                          ) : null}
-                          {activeDetails ? (
-                            <>
-                              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                                <CostPill label="Lodging / night" value={formatUsd(activeDetails.localCostSummary.lodgingMidUsd)} />
-                                <CostPill label="Food / day" value={formatUsd(activeDetails.localCostSummary.foodMidUsd)} />
-                                <CostPill label="Local transport / day" value={formatUsd(activeDetails.localCostSummary.localTransportMidUsd)} />
-                                <CostPill label="Activities / day" value={formatUsd(activeDetails.localCostSummary.activitiesMidUsd)} />
-                              </div>
-                              <div className="mt-4 rounded-[1.4rem] bg-mist px-4 py-4">
-                                <p className="text-sm font-semibold text-ink">
-                                  Local trip total is roughly {formatUsd(activeDetails.localCostSummary.tripTotalUsd)} per traveler before flights.
-                                </p>
-                                <p className="mt-1 text-xs text-stone-500">
-                                  Treat this as directional planning guidance, not a quoted market price.
-                                </p>
-                              </div>
-                            </>
-                          ) : (
-                            <p className="mt-4 text-sm text-stone-500">
-                              We’re loading the destination’s cost breakdown and route estimates.
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    </>
-                  );
-                }
-
-                return (
-                  <>
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Destination deep dive</p>
-                      <h3 className="section-title mt-2 text-4xl text-ink">
-                        {activeDestination.city}, {activeDestination.country}
-                      </h3>
-                      <p className="mt-3 text-sm text-stone-600">
-                        {activeDetails?.enrichment.longSummary ??
-                          activeEntry.enrichment?.longSummary ??
-                          "Destination summary unavailable."}
-                      </p>
-                      <div className="mt-4 flex flex-wrap gap-2">
-                        {(activeDetails?.enrichment.vibeTags ??
-                          activeEntry.enrichment?.vibeTags ??
-                          []).map((tag) => (
-                          <span key={tag} className="rounded-full bg-sun/20 px-3 py-1 text-xs font-semibold text-amber-900">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                      <div className="mt-5">
-                        <WeatherSummary
-                          city={activeDestination.city}
-                          lat={activeDestination.lat}
-                          lon={activeDestination.lon}
-                          startDate={trip.tentativeStart}
-                          endDate={trip.tentativeEnd}
-                        />
-                      </div>
-                      <div className="mt-5 rounded-[1.6rem] bg-white/85 p-4">
-                        <p className="text-sm font-semibold text-ink">Why the group suggested it</p>
-                        <p className="mt-2 text-sm text-stone-600">
-                          {activeEntry.note || "No trip-specific note has been added yet."}
-                        </p>
-                      </div>
-                      <div className="mt-5 rounded-[1.6rem] bg-white/85 p-4">
-                        <p className="text-sm font-semibold text-ink">Visa snapshot</p>
-                        <div className="mt-3 grid gap-2">
-                          {members.map((member) => (
-                            <div key={member.id} className="rounded-2xl border border-ink/8 bg-mist px-3 py-2 text-sm text-stone-700">
-                              <span className="font-semibold">{member.profile?.displayName}</span>:{" "}
-                              <VisaRequirement
-                                passportCode={member.profile?.passport ?? ""}
-                                destinationCode={activeDestination.countryCode}
-                              />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="space-y-5">
-                      <div className="rounded-[1.6rem] bg-white/85 p-4">
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="text-sm font-semibold text-ink">What there is to do</p>
-                            <p className="mt-1 text-sm text-stone-500">
-                              City-specific activity ideas grounded in destination detail.
-                            </p>
-                          </div>
-                          {loadingDestinationId === activeEntry.destinationId ? (
-                            <span className="text-xs font-semibold uppercase tracking-[0.25em] text-lagoon">
-                              Loading
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="mt-4 space-y-3">
-                          {(activeDetails?.enrichment.topActivities ??
-                            activeEntry.enrichment?.topActivities ??
-                            []
-                          ).map((activity) => (
-                            <div key={activity.title} className="rounded-[1.2rem] bg-mist px-4 py-3">
-                              <p className="font-semibold text-ink">{activity.title}</p>
-                              <p className="mt-1 text-sm text-stone-600">{activity.description}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-
-                      <div className="rounded-[1.6rem] bg-white/85 p-4">
-                        <p className="text-sm font-semibold text-ink">Cost snapshot</p>
-                        <p className="mt-1 text-sm text-stone-500">
-                          Rough mid-range estimate for a {activeDetails?.tripDuration ?? trip.tripDuration}-day trip.
-                        </p>
-                        {destinationDetailsError ? (
-                          <p className="mt-3 text-sm text-coral">{destinationDetailsError}</p>
-                        ) : null}
-                        {activeDetails ? (
-                          <>
-                            <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                              <CostPill label="Lodging / night" value={formatUsd(activeDetails.localCostSummary.lodgingMidUsd)} />
-                              <CostPill label="Food / day" value={formatUsd(activeDetails.localCostSummary.foodMidUsd)} />
-                              <CostPill label="Local transport / day" value={formatUsd(activeDetails.localCostSummary.localTransportMidUsd)} />
-                              <CostPill label="Activities / day" value={formatUsd(activeDetails.localCostSummary.activitiesMidUsd)} />
-                            </div>
-                            <div className="mt-4 rounded-[1.4rem] bg-mist px-4 py-4">
-                              <p className="text-sm font-semibold text-ink">
-                                Local trip total is roughly {formatUsd(activeDetails.localCostSummary.tripTotalUsd)} per traveler before flights.
-                              </p>
-                              <p className="mt-1 text-xs text-stone-500">
-                                Treat this as directional planning guidance, not a quoted market price.
-                              </p>
-                            </div>
-                            <div className="mt-4">
-                              <p className="text-sm font-semibold text-ink">Per-person route estimate</p>
-                              <div className="mt-3 space-y-2">
-                                {activeDetails.memberEstimates.map((estimate) => (
-                                  <div key={estimate.profileId} className="rounded-[1.2rem] border border-ink/8 bg-mist px-4 py-3">
-                                    <div className="flex flex-wrap items-center justify-between gap-3">
-                                      <div>
-                                        <p className="font-semibold text-ink">{estimate.displayName}</p>
-                                        <p className="text-sm text-stone-500">
-                                          {estimate.homeCity || "Home city missing"}
-                                        </p>
-                                      </div>
-                                      <div className="text-right">
-                                        <p className="text-sm font-semibold text-ink">
-                                          {estimate.totalTripCostUsd !== null
-                                            ? formatUsd(estimate.totalTripCostUsd)
-                                            : "Estimate unavailable"}
-                                        </p>
-                                        <p className="text-xs text-stone-500">
-                                          {estimate.travelCostUsd !== null
-                                            ? `${formatUsd(estimate.travelCostUsd)} travel + ${formatUsd(estimate.localTripCostUsd)} local`
-                                            : estimate.note}
-                                        </p>
-                                      </div>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          </>
-                        ) : (
-                          <p className="mt-4 text-sm text-stone-500">
-                            We’re loading the destination’s cost breakdown and route estimates.
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-          </Panel>
-        </div>
-      ) : null}
-    </>
-  );
-}
-
-function VotingStage({
-  trip,
-  members,
-  shortlist,
-  dateOptions,
-  destinationVote,
-  dateVote,
-  destinationVotes,
-  dateVotes,
-  onVote
-}: {
-  trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
-  members: ReturnType<ReturnType<typeof useAppState>["getTripMembers"]>;
-  shortlist: ReturnType<ReturnType<typeof useAppState>["getTripDestinations"]>;
-  dateOptions: DateWindowOption[];
-  destinationVote: string | undefined;
-  dateVote: string | undefined;
-  destinationVotes: ReturnType<ReturnType<typeof useAppState>["getVotesForTrip"]>;
-  dateVotes: ReturnType<ReturnType<typeof useAppState>["getVotesForTrip"]>;
-  onVote: (tripId: string, type: "destination" | "date_window", optionId: string) => Promise<void>;
-}) {
-  return (
-    <div className="grid gap-6 xl:grid-cols-[0.72fr_1.28fr]">
-      <Panel className="p-6">
-        <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Ready to decide</p>
-        <h2 className="section-title mt-2 text-3xl">Cast the final votes.</h2>
-        <p className="mt-3 text-sm text-stone-600">
-          Everyone can now choose the best destination and the best date window from the narrowed
-          list.
-        </p>
-        <div className="mt-5 space-y-3">
-          {members.map(({ id, profile }) => (
-            <div key={id} className="rounded-2xl bg-mist px-3 py-3 text-sm text-stone-700">
-              {profile?.displayName}
-            </div>
-          ))}
-        </div>
-      </Panel>
-      <Panel className="p-6">
-        <div className="grid gap-6 lg:grid-cols-2">
-          <VoteCard
-            title="Destination vote"
-            empty="The planner needs to shortlist destinations before voting opens."
-            options={shortlist
-              .filter((entry) => entry.destination)
-              .map((entry) => ({
-                id: entry.destinationId,
-                label: `${entry.destination?.city}, ${entry.destination?.country}`,
-                votes: destinationVotes.filter((vote) => vote.optionId === entry.destinationId).length
-              }))}
-            selectedId={destinationVote}
-            onSelect={(optionId) => void onVote(trip.id, "destination", optionId)}
-          />
-          <VoteCard
-            title="Date vote"
-            empty="Date voting will open once good overlap windows are available."
-            options={dateOptions.map((option) => ({
-              id: option.id,
-              label: `${formatDate(option.startDate)} to ${formatDate(option.endDate)}`,
-              votes: dateVotes.filter((vote) => vote.optionId === option.id).length
-            }))}
-            selectedId={dateVote}
-            onSelect={(optionId) => void onVote(trip.id, "date_window", optionId)}
-          />
-        </div>
-      </Panel>
-    </div>
-  );
-}
-
-function DecidedStage({
-  trip,
-  members,
-  shortlist,
-  dateOptions,
-  destinationVotes,
-  dateVotes
-}: {
-  trip: NonNullable<ReturnType<ReturnType<typeof useAppState>["getTripById"]>>;
-  members: ReturnType<ReturnType<typeof useAppState>["getTripMembers"]>;
-  shortlist: ReturnType<ReturnType<typeof useAppState>["getTripDestinations"]>;
-  dateOptions: DateWindowOption[];
-  destinationVotes: ReturnType<ReturnType<typeof useAppState>["getVotesForTrip"]>;
-  dateVotes: ReturnType<ReturnType<typeof useAppState>["getVotesForTrip"]>;
-}) {
-  const winningDestination = getWinningDestination(shortlist, destinationVotes);
-  const winningDates = getWinningDateWindow(dateOptions, dateVotes);
-
-  return (
-    <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
-      <Panel className="p-6">
-        <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Decision</p>
-        <h2 className="section-title mt-2 text-3xl">The trip has a direction.</h2>
-        <div className="mt-5 space-y-4">
-          <div className="rounded-[1.8rem] bg-mist p-4">
-            <p className="text-sm font-semibold text-ink">Chosen destination</p>
-            <p className="mt-2 text-lg text-stone-700">
-              {winningDestination
-                ? `${winningDestination.destination?.city}, ${winningDestination.destination?.country}`
-                : "No destination chosen yet"}
-            </p>
-          </div>
-          <div className="rounded-[1.8rem] bg-mist p-4">
-            <p className="text-sm font-semibold text-ink">Chosen dates</p>
-            <p className="mt-2 text-lg text-stone-700">
-              {winningDates
-                ? `${formatDate(winningDates.startDate)} to ${formatDate(winningDates.endDate)}`
-                : `Target window remains ${formatDate(trip.tentativeStart)} to ${formatDate(trip.tentativeEnd)}`}
-            </p>
-          </div>
-        </div>
-      </Panel>
-      <Panel className="p-6">
-        <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Group</p>
-        <h2 className="section-title mt-2 text-3xl">Everyone who helped shape it.</h2>
-        <div className="mt-5 grid gap-3 md:grid-cols-2">
-          {members.map(({ id, profile, role }) => (
-            <div key={id} className="rounded-[1.6rem] border border-ink/8 bg-white/75 p-4">
-              <p className="text-base font-semibold text-ink">{profile?.displayName}</p>
-              <p className="mt-1 text-sm text-stone-500">{role === "planner" ? "Planner" : "Member"}</p>
-            </div>
-          ))}
-        </div>
-      </Panel>
-    </div>
-  );
-}
-
-function VoteCard({
-  title,
-  empty,
-  options,
-  selectedId,
-  onSelect
-}: {
-  title: string;
-  empty: string;
-  options: { id: string; label: string; votes: number }[];
-  selectedId: string | undefined;
-  onSelect: (optionId: string) => void;
-}) {
-  return (
-    <div className="rounded-[1.8rem] bg-white/80 p-5">
-      <p className="text-sm uppercase tracking-[0.35em] text-lagoon">{title}</p>
-      <div className="mt-4 space-y-3">
-        {options.length === 0 ? (
-          <p className="text-sm text-stone-500">{empty}</p>
-        ) : (
-          options.map((option) => (
-            <button
-              key={option.id}
-              className={`flex w-full items-center justify-between rounded-[1.5rem] border px-4 py-3 text-left text-sm transition ${
-                selectedId === option.id ? "border-lagoon bg-lagoon/10" : "border-ink/8 bg-mist"
-              }`}
-              onClick={() => onSelect(option.id)}
-              type="button"
-            >
-              <span>{option.label}</span>
-              <span>{option.votes} votes</span>
-            </button>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CostPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-[1.2rem] bg-mist px-4 py-3">
-      <p className="text-xs uppercase tracking-[0.22em] text-stone-500">{label}</p>
-      <p className="mt-1 text-base font-semibold text-ink">{value}</p>
-    </div>
-  );
-}
-
-function getWinningDestination(
-  shortlist: ReturnType<ReturnType<typeof useAppState>["getTripDestinations"]>,
-  votes: ReturnType<ReturnType<typeof useAppState>["getVotesForTrip"]>
-) {
-  return shortlist.reduce<
-    | (ReturnType<ReturnType<typeof useAppState>["getTripDestinations"]>[number] & { totalVotes: number })
-    | null
-  >((winner, entry) => {
-    const totalVotes = votes.filter((vote) => vote.optionId === entry.destinationId).length;
-    if (!winner || totalVotes > winner.totalVotes) {
-      return { ...entry, totalVotes };
-    }
-    return winner;
-  }, null);
-}
-
-function getWinningDateWindow(
-  options: DateWindowOption[],
-  votes: ReturnType<ReturnType<typeof useAppState>["getVotesForTrip"]>
-) {
-  return options.reduce<(DateWindowOption & { totalVotes: number }) | null>((winner, option) => {
-    const totalVotes = votes.filter((vote) => vote.optionId === option.id).length;
-    if (!winner || totalVotes > winner.totalVotes) {
-      return { ...option, totalVotes };
-    }
-    return winner;
-  }, null);
-}
-
-function formatUsd(value: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0
-  }).format(value);
-}
-
-function budgetTierLabel(tier: DestinationEnrichment["budgetTier"]) {
-  return {
-    value: "Better-value",
-    balanced: "Balanced-budget",
-    premium: "Higher-spend"
-  }[tier];
-}
-
-function statusLabel(status: TripStatus) {
-  return status.replaceAll("_", " ");
-}
-
-function inviteStatusLabel(status: "pending" | "accepted" | "expired" | "revoked") {
-  return {
-    pending: "Pending",
-    accepted: "Joined",
-    expired: "Expired",
-    revoked: "Revoked"
-  }[status];
-}
-
-const stageCopy: Record<TripStatus, string> = {
-  draft: "This trip is still being outlined.",
-  collecting_members: "Invite everyone who should help shape the trip.",
-  planning: "Collect dates, compare destinations, and narrow the shortlist.",
-  voting: "Finalists are in place. Time for the group to choose.",
-  decided: "The destination and dates are locked in."
-};

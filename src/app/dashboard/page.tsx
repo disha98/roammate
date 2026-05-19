@@ -1,11 +1,10 @@
-"use client";
-
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { AppShell } from "@/components/app-shell";
-import { RequireAuth } from "@/components/require-auth";
 import { Button, Panel, StatusBadge } from "@/components/ui";
-import { useAppState } from "@/context/app-state";
-import { Trip } from "@/lib/types";
+import { getDashboardData } from "@/lib/queries/dashboard";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import type { Trip } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
 
 function groupTrips(trips: Trip[]) {
@@ -17,84 +16,88 @@ function groupTrips(trips: Trip[]) {
 
 function getTripAttention(
   trip: Trip,
-  currentProfileId: string | undefined,
-  getTripAvailability: (tripId: string) => { profileId: string }[]
+  profileId: string,
+  availabilityProfileIds: Record<string, string[]>
 ): string | null {
-  if (!currentProfileId) return null;
   if (trip.status === "voting") return "Vote now";
   if (trip.status === "planning") {
-    const ranges = getTripAvailability(trip.id);
-    const hasSubmitted = ranges.some((r) => r.profileId === currentProfileId);
-    if (!hasSubmitted) return "Add your dates";
+    const profileIds = availabilityProfileIds[trip.id] ?? [];
+    if (!profileIds.includes(profileId)) return "Add your dates";
   }
   if (trip.status === "collecting_members") return "Waiting for members";
   return null;
 }
 
-export default function DashboardPage() {
-  const { currentProfile, getVisibleTrips, getTripMembers, getTripAvailability } = useAppState();
-  const { created, joined } = getVisibleTrips();
+export default async function DashboardPage() {
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) redirect("/login");
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) redirect("/login");
+
+  const data = await getDashboardData(supabase, user.id);
+  if (!data) redirect("/login");
+
+  const { profile, created, joined, memberCounts, availabilityProfileIds } = data;
   const createdByGroup = groupTrips(created);
   const joinedByGroup = groupTrips(joined);
 
   return (
-    <RequireAuth>
-      <AppShell>
-        <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
-          <Panel className="overflow-hidden">
-            <div className="border-b border-ink/8 px-6 py-6">
-              <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Dashboard</p>
-              <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
-                <div>
-                  <h1 className="section-title text-4xl text-ink">
-                    {currentProfile?.displayName}, here’s every trip thread in motion.
-                  </h1>
-                  <p className="mt-2 max-w-2xl text-sm text-stone-600">
-                    Created trips stay separate from ones you joined, and each friend circle keeps
-                    its own lane.
-                  </p>
-                </div>
-                <Button href="/trips/new">Create a trip</Button>
+    <AppShell>
+      <section className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <Panel className="overflow-hidden">
+          <div className="border-b border-ink/8 px-6 py-6">
+            <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Dashboard</p>
+            <div className="mt-3 flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <h1 className="section-title text-4xl text-ink">
+                  Welcome back, {profile.displayName}.
+                </h1>
+                <p className="mt-2 max-w-lg text-sm text-stone-600">
+                  Your trips at a glance — ones you created and ones you joined.
+                </p>
               </div>
+              <Button href="/trips/new">Create a trip</Button>
             </div>
-            <div className="grid gap-6 p-6 md:grid-cols-2">
-              <TripColumn
-                eyebrow="You’re planning"
-                empty="No active planner trips yet."
-                groupedTrips={createdByGroup}
-                getMemberCount={(tripId) => getTripMembers(tripId).length}
-                getAttention={(trip) => getTripAttention(trip, currentProfile?.id, getTripAvailability)}
-              />
-              <TripColumn
-                eyebrow="You joined"
-                empty="Nothing shared with you yet."
-                groupedTrips={joinedByGroup}
-                getMemberCount={(tripId) => getTripMembers(tripId).length}
-                getAttention={(trip) => getTripAttention(trip, currentProfile?.id, getTripAvailability)}
-              />
-            </div>
-          </Panel>
-          <div className="space-y-6">
-            <Panel className="p-6">
-              <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Trip Lifecycle</p>
-              <ol className="mt-5 space-y-4 text-sm text-stone-600">
-                <li>1. Draft the trip and define the group context.</li>
-                <li>2. Invite people by email or link and collect members.</li>
-                <li>3. Move into planning with availability and destination options.</li>
-                <li>4. Narrow the shortlist and run final voting.</li>
-              </ol>
-            </Panel>
-            <Panel className="border border-ink/12 bg-white/95 p-6">
-              <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Planning rhythm</p>
-              <p className="mt-4 max-w-sm text-base leading-7 text-ink">
-                Start with the group, move into dates and destinations, then narrow to a final vote
-                once the strongest options are visible.
-              </p>
-            </Panel>
           </div>
-        </section>
-      </AppShell>
-    </RequireAuth>
+          <div className="grid gap-6 p-6 md:grid-cols-2">
+            <TripColumn
+              eyebrow="You're planning"
+              empty="No trips yet. Create one to get started."
+              groupedTrips={createdByGroup}
+              memberCounts={memberCounts}
+              profileId={profile.id}
+              availabilityProfileIds={availabilityProfileIds}
+            />
+            <TripColumn
+              eyebrow="You joined"
+              empty="No invites yet. Trips you join will show up here."
+              groupedTrips={joinedByGroup}
+              memberCounts={memberCounts}
+              profileId={profile.id}
+              availabilityProfileIds={availabilityProfileIds}
+            />
+          </div>
+        </Panel>
+        <div className="space-y-6">
+          <Panel className="p-6">
+            <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Trip Lifecycle</p>
+            <ol className="mt-5 space-y-3 text-sm text-stone-600">
+              <li>1. Create a trip and invite your group.</li>
+              <li>2. Collect everyone&apos;s available dates.</li>
+              <li>3. Add and compare destinations.</li>
+              <li>4. Vote and lock the final plan.</li>
+            </ol>
+          </Panel>
+          <Panel className="border border-ink/12 bg-white/95 p-6">
+            <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Planning rhythm</p>
+            <p className="mt-4 max-w-sm text-base leading-7 text-ink">
+              Group first, dates second, destinations third — then vote and go.
+            </p>
+          </Panel>
+        </div>
+      </section>
+    </AppShell>
   );
 }
 
@@ -102,14 +105,16 @@ function TripColumn({
   eyebrow,
   groupedTrips,
   empty,
-  getMemberCount,
-  getAttention
+  memberCounts,
+  profileId,
+  availabilityProfileIds
 }: {
   eyebrow: string;
   groupedTrips: Record<string, Trip[]>;
   empty: string;
-  getMemberCount: (tripId: string) => number;
-  getAttention: (trip: Trip) => string | null;
+  memberCounts: Record<string, number>;
+  profileId: string;
+  availabilityProfileIds: Record<string, string[]>;
 }) {
   const groups = Object.entries(groupedTrips);
 
@@ -129,8 +134,8 @@ function TripColumn({
               </p>
               <div className="space-y-3">
                 {trips.map((trip) => {
-                  const memberCount = getMemberCount(trip.id);
-                  const attention = getAttention(trip);
+                  const memberCount = memberCounts[trip.id] ?? 0;
+                  const attention = getTripAttention(trip, profileId, availabilityProfileIds);
                   return (
                     <Link
                       key={trip.id}

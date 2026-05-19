@@ -133,7 +133,6 @@ const tripInvites: TripInvite[] = [
   {
     id: createId("invite"),
     tripId: "trip_iberia",
-    type: "link",
     token: "demo-invite-token",
     expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     createdAt: now

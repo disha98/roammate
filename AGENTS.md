@@ -11,20 +11,21 @@ The intended product flow is:
 - log in,
 - land on a dashboard showing trips you created and trips you joined,
 - open any trip into a shared planning workspace,
-- invite people by email or link,
+- invite people by share link,
 - collect member availability,
 - compare destinations,
-- vote on the final destination and date window.
+- vote on the final destination and date window,
+- let the planner lock the final destination and dates into the trip.
 
 ## Current State
 
-The app is now in a v3 checkpoint state: the core trip/account layer and the active planning layer are persisted in Supabase, and destination intelligence is cached per city in Supabase for reuse across trips.
+The app is now in its final desktop release state on the current branch: the core trip/account layer and the active planning layer are persisted in Supabase, destination intelligence is cached per city in Supabase for reuse across trips, final trip outcomes are persisted explicitly, and planning-stage recommendations are generated from LLM trip context plus weather/visa validation.
 
 Implemented now:
 
 - dashboard with created/joined trip separation and group-based organization,
 - trip creation,
-- invite preview/join flow,
+- link-only invite preview/join flow,
 - trip workspace with stage-driven UX,
 - planner-only controls for member invites and trip management,
 - non-planner users do not see invite activity,
@@ -41,6 +42,14 @@ Implemented now:
   - per-member route estimates based on each member's saved home city,
 - date-window overlap suggestions,
 - voting / decision UI.
+- planner review-and-lock flow for the final destination and final date window,
+- reopening a locked decision returns the trip to `voting` while keeping the last locked outcome visible until a new one is confirmed,
+- planning-stage destination recommendations:
+  - 3-4 recommendations max,
+  - LLM proposes the cities from trip context,
+  - server validates them with geocoding, trip-window weather, and best-effort visa fit,
+  - already-added trip cities are hidden from the recommendations panel,
+  - any member can add a recommendation to the trip board,
 - Supabase-backed auth and persisted trip/planning records when env vars are configured:
   - profiles,
   - trips,
@@ -51,6 +60,7 @@ Implemented now:
   - trip destinations,
   - final date option picks on trips,
   - votes,
+  - persisted final destination/date outcome fields on trips,
   - cached destination enrichments.
 - auth now uses email/password sign-in and account creation from the `/login` screen.
 - live searched-city images now attempt a real provider lookup and fall back to a designed placeholder instead of random stock photos.
@@ -63,21 +73,16 @@ Implemented now:
   - only `llm_synthesized` source enrichments are shown as reliable; heuristic/mixed data is treated as unavailable,
   - per-member travel estimates are derived at request time from the member home city and destination coordinates.
 
-Still not fully productized:
-
-- email delivery for invites,
-- explicit persisted final destination/date winners in the `decided` phase.
-
 ## Important Architecture Notes
 
 - The main state container is `src/context/app-state.tsx`.
-- Supabase is now the source of truth for auth, profiles, trips, trip members, trip invites, profile availability windows, availability ranges, trip destinations, votes, and cached destination enrichment.
-- The trip workspace still derives the final decided state from votes rather than storing explicit winning destination/date fields.
+- Supabase is now the source of truth for auth, profiles, trips, trip members, trip invites, profile availability windows, availability ranges, trip destinations, votes, cached destination enrichment, and final locked trip outcomes.
+- Invite behavior is link-only across the product and schema.
 - The app shell spans the full viewport width and the profile/settings entry lives bottom-left in the sidebar.
 - The workspace is phase-based:
   - `draft` / `collecting_members` emphasizes invites and membership,
   - `planning` emphasizes availability and destinations,
-  - `voting` emphasizes final choices,
+  - `voting` emphasizes group votes plus the planner’s review-and-lock step,
   - `decided` emphasizes the outcome.
 - The entire app is behind authentication. `/`, `/dashboard`, trip routes, and invite routes all require login.
 - Destination selection is live-search backed. The trip workspace should search world cities from an API rather than rely on a fixed picker, and the selected city should be stored as a snapshot on the trip.
@@ -87,6 +92,11 @@ Still not fully productized:
   - `destination_enrichments` is keyed by `destination_id`,
   - the overlay computes trip-local totals plus per-member route estimates from profile `homeCity`,
   - only free APIs should be used for this enrichment path unless product direction changes explicitly.
+- Destination recommendations now have a second route:
+  - `/api/destinations/recommendations` is authenticated,
+  - the LLM suggests city candidates from trip context,
+  - the server validates each candidate before display,
+  - the panel hides entirely if fewer than 3 validated recommendations are available.
 - Supabase RLS is required for the persisted experience. The current schema file contains helper functions and policies for:
   - trip visibility,
   - joinable share links,
@@ -115,6 +125,7 @@ Still not fully productized:
 - `src/lib/supabase/client.ts` - browser Supabase client helper.
 - `src/lib/supabase/schema.sql` - baseline schema plus RLS policies for persisted core entities.
 - `src/app/api/destinations/enrichment/route.ts` - cached destination detail and per-member cost API.
+- `src/app/api/destinations/recommendations/route.ts` - planning-stage recommendation API.
 
 ## Working Rules
 
@@ -159,11 +170,11 @@ The app now also has server-side route protection:
 
 - `middleware.ts` enforces Supabase session checks for `/`, `/dashboard`, `/trips/*`, `/profile`, and `/invite/*`,
 - `/api/destinations/search` now requires an authenticated Supabase user and applies a basic per-user/per-IP rate limit,
-- `/api/destinations/enrichment` also requires an authenticated Supabase user.
+- `/api/destinations/enrichment` also requires an authenticated Supabase user,
+- `/api/destinations/recommendations` also requires an authenticated Supabase user.
 
 ## Next Real Product Step
 
 - Richer destination intelligence as token budgets allow (more activities, longer descriptions).
-- Explicit final trip outcome persistence once the group moves into `decided`.
-- Email delivery for invites.
-- Destination recommendations based on group preferences.
+- Recommendation ranking and prompt tuning if product direction expands.
+- Deployment and operational hardening outside the repo-local feature scope.

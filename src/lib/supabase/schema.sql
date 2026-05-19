@@ -57,7 +57,6 @@ as $$
     select 1
     from trip_invites
     where trip_invites.trip_id = target_trip_id
-      and trip_invites.type = 'link'
       and trip_invites.revoked_at is null
       and (trip_invites.expires_at is null or trip_invites.expires_at > now())
   );
@@ -108,6 +107,11 @@ create table if not exists trips (
   tentative_end date not null,
   status text not null check (status in ('draft', 'collecting_members', 'planning', 'voting', 'decided')),
   decided_at timestamptz,
+  final_destination_id text,
+  final_destination_snapshot jsonb,
+  final_date_start date,
+  final_date_end date,
+  final_locked_by_profile_id uuid references profiles(id),
   created_at timestamptz not null default now()
 );
 
@@ -123,12 +127,9 @@ create table if not exists trip_members (
 create table if not exists trip_invites (
   id uuid primary key,
   trip_id uuid not null references trips(id) on delete cascade,
-  type text not null check (type in ('email', 'link')),
   token text not null unique,
-  email text,
   created_at timestamptz not null default now(),
   expires_at timestamptz,
-  accepted_at timestamptz,
   revoked_at timestamptz
 );
 
@@ -202,8 +203,16 @@ alter table profiles add column if not exists photo_url text;
 alter table trips add column if not exists decided_at timestamptz;
 alter table trips add column if not exists final_date_option_ids text[] not null default '{}';
 alter table trips add column if not exists trip_duration integer not null default 7;
+alter table trips add column if not exists final_destination_id text;
+alter table trips add column if not exists final_destination_snapshot jsonb;
+alter table trips add column if not exists final_date_start date;
+alter table trips add column if not exists final_date_end date;
+alter table trips add column if not exists final_locked_by_profile_id uuid references profiles(id);
 alter table trip_invites add column if not exists expires_at timestamptz;
 alter table trip_invites add column if not exists revoked_at timestamptz;
+alter table trip_invites drop column if exists type;
+alter table trip_invites drop column if exists email;
+alter table trip_invites drop column if exists accepted_at;
 
 alter table profiles enable row level security;
 alter table trips enable row level security;
@@ -244,7 +253,10 @@ for select using (profile_id = auth.uid() or public.is_trip_member(trip_id));
 
 drop policy if exists "trip_members_insert_self_or_planner" on trip_members;
 create policy "trip_members_insert_self_or_planner" on trip_members
-for insert with check (profile_id = auth.uid() or public.is_trip_creator(trip_id));
+for insert with check (
+  public.is_trip_creator(trip_id)
+  or (profile_id = auth.uid() and public.is_trip_joinable(trip_id))
+);
 
 drop policy if exists "trip_members_delete_planner" on trip_members;
 create policy "trip_members_delete_planner" on trip_members
@@ -254,20 +266,38 @@ drop policy if exists "trip_members_delete_self" on trip_members;
 create policy "trip_members_delete_self" on trip_members
 for delete using (auth.uid() = profile_id);
 
+-- Only trip members can browse invites. Non-members use the
+-- lookup_invite_by_token() security-definer function for the join/preview flow.
 drop policy if exists "trip_invites_select_visible" on trip_invites;
 create policy "trip_invites_select_visible" on trip_invites
-for select using (
-  public.is_trip_member(trip_id)
-  or (revoked_at is null and (expires_at is null or expires_at > now()))
-);
+for select using (public.is_trip_member(trip_id));
+
+-- Security-definer function: look up a single invite by its token.
+-- Bypasses RLS so the invite preview and join flows work for non-members
+-- who possess the token (the token IS the authorization).
+create or replace function public.lookup_invite_by_token(invite_token text)
+returns table (
+  id uuid, trip_id uuid, token text,
+  created_at timestamptz, expires_at timestamptz, revoked_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select i.id, i.trip_id, i.token, i.created_at, i.expires_at, i.revoked_at
+  from trip_invites i
+  where i.token = invite_token
+  limit 1;
+$$;
 
 drop policy if exists "trip_invites_insert_planner" on trip_invites;
 create policy "trip_invites_insert_planner" on trip_invites
 for insert with check (public.is_trip_planner(trip_id));
 
+drop policy if exists "trip_invites_update_planner" on trip_invites;
 drop policy if exists "trip_invites_update_planner_or_recipient" on trip_invites;
-create policy "trip_invites_update_planner_or_recipient" on trip_invites
-for update using (public.is_trip_planner(trip_id) or auth.uid() is not null);
+create policy "trip_invites_update_planner" on trip_invites
+for update using (public.is_trip_planner(trip_id));
 
 -- Planning tables RLS
 
@@ -304,7 +334,7 @@ for insert with check (auth.uid() = profile_id and public.is_trip_member(trip_id
 
 drop policy if exists "ar_delete_own" on availability_ranges;
 create policy "ar_delete_own" on availability_ranges
-for delete using (auth.uid() = profile_id);
+for delete using (auth.uid() = profile_id and public.is_trip_member(trip_id));
 
 -- destinations: any authenticated user can read/insert
 
@@ -316,9 +346,8 @@ drop policy if exists "dest_insert_authenticated" on destinations;
 create policy "dest_insert_authenticated" on destinations
 for insert with check (auth.uid() is not null);
 
+-- No UPDATE policy on destinations — catalog data is insert-only reference data.
 drop policy if exists "dest_update_authenticated" on destinations;
-create policy "dest_update_authenticated" on destinations
-for update using (auth.uid() is not null);
 
 -- trip_destinations: trip members can read/insert; planner can update shortlist
 
@@ -334,6 +363,10 @@ drop policy if exists "td_update_planner" on trip_destinations;
 create policy "td_update_planner" on trip_destinations
 for update using (public.is_trip_planner(trip_id));
 
+drop policy if exists "td_delete_planner" on trip_destinations;
+create policy "td_delete_planner" on trip_destinations
+for delete using (public.is_trip_planner(trip_id));
+
 -- destination_enrichments: authenticated users can read and refresh cached shared data
 
 drop policy if exists "de_select_authenticated" on destination_enrichments;
@@ -344,9 +377,12 @@ drop policy if exists "de_insert_authenticated" on destination_enrichments;
 create policy "de_insert_authenticated" on destination_enrichments
 for insert with check (auth.uid() is not null);
 
+-- Only allow updating enrichments that are stale (due for refresh).
+-- Fresh enrichments cannot be tampered with by arbitrary users.
 drop policy if exists "de_update_authenticated" on destination_enrichments;
-create policy "de_update_authenticated" on destination_enrichments
-for update using (auth.uid() is not null);
+drop policy if exists "de_update_stale_only" on destination_enrichments;
+create policy "de_update_stale_only" on destination_enrichments
+for update using (auth.uid() is not null and stale_at <= now());
 
 -- votes: trip members can read; members insert/update their own
 
@@ -364,4 +400,4 @@ for update using (auth.uid() = profile_id and public.is_trip_member(trip_id));
 
 drop policy if exists "votes_delete_own" on votes;
 create policy "votes_delete_own" on votes
-for delete using (auth.uid() = profile_id);
+for delete using (auth.uid() = profile_id and public.is_trip_member(trip_id));

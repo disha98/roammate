@@ -740,3 +740,232 @@ export function estimateTravelCostUsd(options: {
   const longHaulSurcharge = options.distanceMiles > 4500 ? 210 : options.distanceMiles > 2500 ? 95 : 0;
   return Math.round(base + options.distanceMiles * distanceFactor + longHaulSurcharge);
 }
+
+export interface LlmRecommendationCandidate {
+  city: string;
+  country: string;
+  reason: string;
+}
+
+export interface TypicalWeatherSnapshot {
+  label: string;
+  summary: string;
+  score: number;
+  avgHighC: number;
+  avgLowC: number;
+  avgDailyPrecipMm: number;
+}
+
+interface ArchiveWeatherResponse {
+  daily?: {
+    temperature_2m_max?: number[];
+    temperature_2m_min?: number[];
+    precipitation_sum?: number[];
+    weather_code?: number[];
+  };
+}
+
+function average(values: number[]) {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function formatMonthLabel(date: string) {
+  return new Intl.DateTimeFormat("en", { month: "long" }).format(new Date(`${date}T00:00:00`));
+}
+
+function chooseTypicalWeatherWindow(startDate: string, endDate: string) {
+  const historicalStart = new Date(`${startDate}T00:00:00`);
+  const historicalEnd = new Date(`${endDate}T00:00:00`);
+  historicalStart.setFullYear(historicalStart.getFullYear() - 1);
+  historicalEnd.setFullYear(historicalEnd.getFullYear() - 1);
+
+  return {
+    label: `Typical weather for ${formatMonthLabel(startDate)}`,
+    startDate: historicalStart.toISOString().slice(0, 10),
+    endDate: historicalEnd.toISOString().slice(0, 10)
+  };
+}
+
+function describeWeatherTone(avgHighC: number, avgDailyPrecipMm: number) {
+  if (avgHighC >= 30) {
+    return avgDailyPrecipMm > 6 ? "hot with a real rain risk" : "hot and summery";
+  }
+
+  if (avgHighC >= 22) {
+    return avgDailyPrecipMm > 6 ? "warm with some rain in the mix" : "warm and comfortable";
+  }
+
+  if (avgHighC >= 14) {
+    return avgDailyPrecipMm > 6 ? "mild but potentially damp" : "mild and easygoing";
+  }
+
+  return avgDailyPrecipMm > 6 ? "cool and often wet" : "cool and lighter on rain";
+}
+
+function scoreTypicalWeather(avgHighC: number, avgLowC: number, avgDailyPrecipMm: number) {
+  const idealHigh = 24;
+  const idealLow = 15;
+  const highPenalty = Math.abs(avgHighC - idealHigh) * 2.6;
+  const lowPenalty = Math.abs(avgLowC - idealLow) * 1.4;
+  const precipPenalty = avgDailyPrecipMm * 3.2;
+  const extremePenalty =
+    avgHighC >= 34 ? 12 : avgHighC <= 8 ? 12 : 0;
+
+  return clamp(Math.round(100 - highPenalty - lowPenalty - precipPenalty - extremePenalty), 0, 100);
+}
+
+export async function getTypicalWeatherSnapshot(input: {
+  city: string;
+  lat: number;
+  lon: number;
+  startDate: string;
+  endDate: string;
+}): Promise<TypicalWeatherSnapshot> {
+  const mode = chooseTypicalWeatherWindow(input.startDate, input.endDate);
+  const params = new URLSearchParams({
+    latitude: String(input.lat),
+    longitude: String(input.lon),
+    start_date: mode.startDate,
+    end_date: mode.endDate,
+    daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum",
+    timezone: "auto"
+  });
+
+  const response = await fetch(`https://archive-api.open-meteo.com/v1/archive?${params.toString()}`, {
+    headers: { Accept: "application/json" },
+    next: { revalidate: 60 * 60 * 24 }
+  });
+
+  if (!response.ok) {
+    throw new Error("Typical weather lookup failed");
+  }
+
+  const payload = (await response.json()) as ArchiveWeatherResponse;
+  const avgHighC = Math.round(average(payload.daily?.temperature_2m_max ?? []));
+  const avgLowC = Math.round(average(payload.daily?.temperature_2m_min ?? []));
+  const avgDailyPrecipMm = Math.round(average(payload.daily?.precipitation_sum ?? []));
+  const score = scoreTypicalWeather(avgHighC, avgLowC, avgDailyPrecipMm);
+  const tone = describeWeatherTone(avgHighC, avgDailyPrecipMm);
+
+  return {
+    label: mode.label,
+    summary: `${input.city} looks ${tone} during this window, with highs near ${avgHighC}°C, lows around ${avgLowC}°C, and roughly ${avgDailyPrecipMm} mm of daily precipitation.`,
+    score,
+    avgHighC,
+    avgLowC,
+    avgDailyPrecipMm
+  };
+}
+
+export async function suggestDestinationCandidates(input: {
+  tripTitle: string;
+  tripSummary: string;
+  tentativeStart: string;
+  tentativeEnd: string;
+  tripDuration: number;
+  memberCount: number;
+  passports: string[];
+  homeCities: string[];
+  currentDestinations: string[];
+}) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return [];
+  }
+
+  const systemPrompt =
+    "Return only JSON. Recommend 6 city and country pairs for a group trip. Optimize first for favorable weather in the given trip window and second for low visa friction for the majority of travelers based on the passports provided. Avoid cities already on the trip board. Keep each reason to one sentence and user-facing.";
+
+  const userPrompt = [
+    `Trip title: ${input.tripTitle}`,
+    `Trip summary: ${input.tripSummary || "No extra summary provided."}`,
+    `Trip window: ${input.tentativeStart} to ${input.tentativeEnd}`,
+    `Trip duration: ${input.tripDuration} days`,
+    `Group size: ${input.memberCount}`,
+    `Known passports: ${input.passports.length > 0 ? input.passports.join(", ") : "unknown"}`,
+    `Known home cities: ${input.homeCities.length > 0 ? input.homeCities.join(", ") : "unknown"}`,
+    `Already on the board: ${input.currentDestinations.length > 0 ? input.currentDestinations.join(", ") : "none"}`
+  ].join("\n");
+
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      max_tokens: 900,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "destination_recommendations",
+          schema: {
+            type: "object",
+            properties: {
+              recommendations: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    city: { type: "string" },
+                    country: { type: "string" },
+                    reason: { type: "string" }
+                  },
+                  required: ["city", "country", "reason"]
+                }
+              }
+            },
+            required: ["recommendations"]
+          }
+        }
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => "(unreadable)");
+    console.error(`[recommendations] Groq API ${response.status}: ${errorBody}`);
+    return [];
+  }
+
+  const payload = (await response.json()) as {
+    choices?: {
+      message?: { content?: string };
+    }[];
+  };
+  const text = payload.choices?.[0]?.message?.content;
+  if (!text) {
+    console.error("[recommendations] Groq returned no content in choices");
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(text) as { recommendations?: LlmRecommendationCandidate[] };
+    const results = (parsed.recommendations ?? [])
+      .map((entry) => ({
+        city: entry.city.trim(),
+        country: entry.country.trim(),
+        reason: entry.reason.trim()
+      }))
+      .filter((entry) => entry.city && entry.country && entry.reason)
+      .slice(0, 6);
+    console.log(`[recommendations] Groq returned ${results.length} candidates`);
+    return results;
+  } catch (error) {
+    console.error("[recommendations] Failed to parse Groq response:", text.slice(0, 200), error);
+    return [];
+  }
+}

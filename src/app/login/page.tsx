@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button, Input, Panel } from "@/components/ui";
+import { Logo } from "@/components/logo";
 import { useAppState } from "@/context/app-state";
 
 export default function LoginPage() {
@@ -64,8 +65,8 @@ export default function LoginPage() {
     <main className="mx-auto flex min-h-screen max-w-5xl items-center px-6 py-16">
       <div className="grid w-full gap-6 lg:grid-cols-[0.95fr_1.05fr]">
         <Panel className="p-8">
-          <p className="text-xs uppercase tracking-[0.35em] text-lagoon">Planner Login</p>
-          <h1 className="section-title mt-4 text-5xl leading-tight">Open the dashboard, keep every trip thread visible.</h1>
+          <Logo iconSize={32} wordmarkClassName="text-3xl" className="mb-6" />
+          <h1 className="section-title text-5xl leading-tight">Open the dashboard, keep every trip thread visible.</h1>
           <p className="mt-5 text-sm text-stone-600">
             Sign in with your email and password. If you are new here, create an account first and
             then continue into the app.

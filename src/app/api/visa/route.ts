@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { lookupVisaRequirement } from "@/lib/visa-dataset";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 const responseCache = new Map<string, Awaited<ReturnType<typeof lookupVisaRequirement>>>();
 
@@ -8,6 +9,16 @@ function cacheKey(passport: string, destination: string) {
 }
 
 export async function GET(request: Request) {
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) {
+    return NextResponse.json({ error: "Service unavailable." }, { status: 503 });
+  }
+
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) {
+    return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+  }
+
   const url = new URL(request.url);
   const passport = url.searchParams.get("passport")?.trim().toUpperCase();
   const destination = url.searchParams.get("destination")?.trim().toUpperCase();

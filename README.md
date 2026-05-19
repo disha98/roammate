@@ -7,10 +7,10 @@ Roammate is a travel planning app for groups. It helps one person plan a trip wi
 - Sign in and land on a dashboard.
 - See trips you created and trips you joined.
 - Open any trip into a shared planning workspace.
-- Invite people by email or by shareable link.
+- Invite people by shareable link.
 - Keep profile details in one place, including display name, home city, passport country, profile photo, and recurring availability windows.
 - Search cities worldwide, add destinations, compare them, and review typical weather for the trip month and visa requirements.
-- Narrow the trip down to a final shortlist and vote on the winning option.
+- Narrow the trip down to a final shortlist, vote, and let the planner lock the final destination and date window.
 
 ## What has been built so far
 
@@ -28,33 +28,36 @@ The app has the full planning flow working end-to-end:
 10. LLM-powered destination intelligence via Groq: city-specific summaries, vibe tags, and top activities.
 11. Destination detail overlay with cost snapshots and per-member travel estimates based on home city.
 12. Date-window overlap suggestions with sliding window algorithm.
-13. Availability entry, final shortlist selection, and voting screens.
-14. Supabase-backed auth and full persistence: profiles, trips, members, invites, availability, destinations, enrichments, and votes.
-15. Server-side route protection via Next.js middleware with Supabase session enforcement.
-16. Provider-backed searched-city image lookup with a designed placeholder fallback.
-17. Invite link preview with sign-in CTA and auto-join after authentication.
+13. Availability entry, final shortlist selection, voting screens, and persisted planner lock flow for the final trip outcome.
+14. Planning-stage destination recommendations generated from trip context, validated against weather fit and visa friction.
+15. Supabase-backed auth and full persistence: profiles, trips, members, link invites, availability, destinations, enrichments, votes, and final locked outcomes.
+16. Server-side route protection via Next.js middleware with Supabase session enforcement.
+17. Provider-backed searched-city image lookup with a designed placeholder fallback.
+18. Invite link preview with sign-in CTA and auto-join after authentication.
 
 ## Product progress
 
-This project is now at a v3 checkpoint.
+This project is now at its final desktop release state on the current branch.
 
 - The full user experience is in place from trip creation through group decision.
 - All planning data is persisted in Supabase (nothing remains in localStorage).
 - The entire app is auth-gated with server-side session enforcement.
+- Invites are link-only across the shipped product.
 - Destination intelligence is powered by Groq LLM with structured JSON output and token-optimized requests.
+- Planning recommendations are LLM-suggested, then validated against geocoding, trip-window weather, and best-effort visa fit.
 - Only LLM-synthesized content is shown; the UI shows "unavailable" instead of generic filler.
 - Visa data is real and dataset-backed.
 - Weather summaries are based on the planned trip month.
 - Destination search is live, authenticated, and rate-limited.
 - Cost estimates are derived from World Bank income-level data with city-level adjustments.
 - Per-member travel cost estimates are computed from home city distance.
+- Final destination and date winners are persisted explicitly when the planner locks the outcome.
 
 ## What’s next
 
-- Explicit final trip outcome persistence in the `decided` phase.
-- Email delivery for invites.
-- Destination recommendations based on group preferences.
 - Richer destination intelligence as token budgets allow.
+- Recommendation tuning and smarter ranking inputs if product direction expands.
+- Deployment and operational hardening outside the repo-local product scope.
 
 ## Environment
 

@@ -6,9 +6,8 @@ export type TripStatus =
   | "decided";
 
 export type MemberRole = "planner" | "member";
-export type InviteType = "email" | "link";
 export type VoteType = "destination" | "date_window";
-export type InviteStatus = "pending" | "accepted" | "expired" | "revoked";
+export type InviteStatus = "pending" | "expired" | "revoked";
 
 export interface Profile {
   id: string;
@@ -41,6 +40,11 @@ export interface Trip {
   status: TripStatus;
   createdAt: string;
   decidedAt?: string;
+  finalDestinationId?: string;
+  finalDestinationSnapshot?: DestinationCatalogItem;
+  finalDateStart?: string;
+  finalDateEnd?: string;
+  finalLockedByProfileId?: string;
 }
 
 export interface TripMember {
@@ -54,12 +58,9 @@ export interface TripMember {
 export interface TripInvite {
   id: string;
   tripId: string;
-  type: InviteType;
   token: string;
-  email?: string;
   createdAt: string;
   expiresAt?: string;
-  acceptedAt?: string;
   revokedAt?: string;
 }
 
@@ -156,4 +157,14 @@ export interface DateWindowOption {
   startDate: string;
   endDate: string;
   coverage: number;
+}
+
+export interface RecommendedDestination {
+  destination: DestinationCatalogItem;
+  reasons: string[];
+  weatherSummary: string;
+  weatherScore: number;
+  visaSummary: string;
+  visaFreeMemberCount: number;
+  knownPassportCount: number;
 }

@@ -1,99 +1,106 @@
-# Roammate Plan Status
+# Roammate Final Release Status
 
-Last updated: 2026-05-12
+Last updated: 2026-05-18
 
-## Current Snapshot
+## Current Status
 
-The app is now in a V3 checkpoint:
+The final desktop release plan in this document has been implemented on the current branch.
 
-- dashboard separates created and joined trips,
-- trip workspace is phase-aware,
-- profile page supports passport country selection and recurring availability defaults,
-- visa lookups are real and use a repo-local dataset snapshot,
-- weather summaries are live,
-- destination search is live and selected cities are stored as snapshots,
-- searched-city images now use provider lookup with a designed placeholder fallback instead of random stock images,
-- destination shortlist and voting UI exist.
-- Supabase auth and persisted core entities are wired in for all planning data.
-- auth now uses email/password sign-in and account creation rather than passwordless email links.
-- the entire app is auth-gated, including invite routes.
-- protected app routes now also have server-side Supabase session enforcement through Next.js middleware.
-- collecting-members stage now has a clear planner CTA to move into planning.
-- invite activity is planner-only.
-- destination search is now authenticated and rate-limited server-side before it can spend provider quota.
-- destination intelligence is now LLM-powered via Groq API (free tier, `openai/gpt-oss-20b`).
-- generic heuristic destination content is no longer shown; the UI shows "unavailable" when LLM data is missing.
-- token usage is optimized (~600-800 tokens per destination) for free tier rate limits.
+Shipped now:
 
-## Shipped vs Pending
+- link-only invites across product copy, app logic, and schema assumptions,
+- persisted planner-locked final destination/date outcomes on trips,
+- planner reopen flow back to `voting` while retaining the last locked outcome until re-locked,
+- planning-stage recommendation panel backed by `/api/destinations/recommendations`,
+- LLM-suggested recommendations validated with geocoding, trip-window weather, and best-effort visa fit,
+- passing `npm run typecheck`, `npm run lint`, and `npm run build`.
 
-### Shipped in the current demo build
+## Release Target
 
-- dashboard and app shell,
-- trip creation backed by Supabase,
-- invite preview/join UX backed by Supabase,
-- planner-only controls for invite actions,
-- planner-only invite activity visibility,
-- profile page with Supabase-backed profile identity,
-- recurring availability windows,
-- live destination search plus selected-city snapshots,
-- curated fallback destinations for demo data,
-- live weather,
-- dataset-backed visa lookup,
-- stage-driven trip workspace,
-- voting/decision screens.
+This is the final ship plan for the production-ready desktop release.
 
-### Still pending
+The release must:
 
-- real email delivery for invites,
-- stronger backend enforcement and validation of planner/member permissions,
-- tighter invite-token RLS and membership validation,
-- deployment hardening,
-- explicit final trip outcome persistence in the `decided` phase,
-- destination recommendations based on group preferences.
+- remove email invites and ship link-only invites end to end,
+- persist explicit final trip outcomes instead of deriving them only from votes,
+- add 3-4 planning-stage destination recommendations generated from LLM trip context,
+- keep recommendations focused on trip-window weather suitability first and low visa friction for most of the group second,
+- stay on free APIs/providers only,
+- finish with desktop-quality UX cleanup and successful `typecheck`, `lint`, and `build`.
 
-## Recommended Next Sequence
+Mobile-specific polish is not required for this release.
 
-### Phase 1
+## Locked Product Decisions
 
-Shipped:
+### Invites
 
-- Supabase auth,
-- persisted profiles,
-- persisted trips,
-- persisted trip members,
-- persisted trip invites,
-- persisted invite preview/join flow.
+- invites are link-only in the shipped product,
+- email-invite UI, copy, logic, and schema support should be removed rather than hidden,
+- invite preview and join flow remain authenticated and share-link based.
 
-### Phase 2
+### Final Outcome
 
-Persist planning state:
+- the planner explicitly reviews and locks the final destination and date window,
+- the planner may lock any shortlisted destination and any final date option, not just top-voted winners,
+- locking persists the outcome to the trip record and moves the trip into `decided`,
+- reopening a decision returns the trip to `voting`,
+- the last locked outcome remains visible until a new outcome is re-locked.
 
-- profile availability windows,
-- trip availability ranges,
-- trip destinations and shortlist state,
-- final date option selections,
-- votes.
+### Recommendations
 
-### Phase 3
+- recommendations appear in the planning board near destination search/add flows,
+- recommendations are generated from a prompt built from the trip window, trip duration, trip members, passport data when available, and current trip board context,
+- the LLM proposes the cities, then each city must be validated with geocoding/country metadata before display,
+- only 3-4 recommendations should be shown,
+- already-added trip destinations should be hidden from recommendations,
+- any trip member may add a recommended destination to the board,
+- each recommendation should show 2-3 short reasons,
+- if recommendation generation fails, hide the section entirely,
+- if some traveler profiles are incomplete, still show best-effort recommendations using known data.
 
-Productionize invites and permissions:
+## Implementation Work
 
-- real email delivery,
-- stricter server-side permission enforcement,
-- broader QA of RLS behavior for join/share/profile visibility,
-- better error states for invalid joins and write failures.
+### 1. Link-only invite cleanup
 
-### Phase 4
+- update shared types and app state to remove email-invite support,
+- update `trip_invites` reads/writes to link-only behavior,
+- remove unused email-invite state/actions,
+- remove invite-by-email wording from dashboard, docs, and other user-facing copy,
+- tighten invite join/update handling around the link-only flow.
 
-Finish production readiness:
+### 2. Persisted decision model
 
-- error handling,
-- loading states,
-- mobile polish,
-- deployment,
-- sample/demo data strategy,
-- weather/visa enrichment caching strategy for persisted destination records.
+- extend `trips` with persisted winner fields for destination and date window,
+- map those fields into shared trip state,
+- add planner actions to lock a final destination/date pair and to reopen the decision,
+- replace decided-stage vote-derived winners with persisted outcome rendering,
+- keep vote counts available during review while treating the planner lock as the source of truth.
+
+### 3. Planning recommendations
+
+- add an authenticated recommendations API route,
+- build an LLM prompt using trip data and visa/weather goals,
+- validate suggested cities before display,
+- compute explanation copy from the validated result,
+- show recommendations only during planning and only when they load successfully,
+- allow direct add-to-trip behavior from each recommendation card.
+
+### 4. Desktop release hardening
+
+- clean up stale copy that still promises email invites,
+- tighten empty/error/loading states around invites, finalization, and recommendations,
+- keep the experience user-facing rather than developer-facing,
+- run `npm run typecheck`, `npm run lint`, and `npm run build`.
+
+## Acceptance Criteria
+
+- planners can create, copy, revoke, preview, and use link invites with no email-invite traces left in the product,
+- locked destination/date outcomes persist across reloads and render correctly in the decided stage,
+- planners can reopen a locked decision and re-lock a new outcome,
+- non-planners cannot lock or reopen outcomes,
+- recommendations show at most 4 validated cities with rationale and can be added into the trip,
+- recommendations hide cleanly on failure without generic fallback content,
+- the app passes typecheck, lint, and build before handoff.
 
 ## Maintenance Rule
 
